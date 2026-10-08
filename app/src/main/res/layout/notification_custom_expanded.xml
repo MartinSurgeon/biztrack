@@ -1,0 +1,161 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="@drawable/widget_stat_card"
+    android:orientation="vertical"
+    android:padding="14dp">
+
+    <!-- Header Row -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <ImageView
+            android:id="@+id/notif_exp_icon"
+            android:layout_width="24dp"
+            android:layout_height="24dp"
+            android:src="@drawable/ic_naadriel_logo"
+            android:contentDescription="Naadriel Farm Logo" />
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/notif_exp_business_name"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="NAADRIEL ENTERPRISE"
+                android:textColor="#1B5E20"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/notif_exp_category_tag"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Sales &amp; Debt Transaction Notice"
+                android:textColor="#748A74"
+                android:textSize="10sp" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/notif_exp_badge_status"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="@drawable/widget_button_secondary_bg"
+            android:paddingHorizontal="8dp"
+            android:paddingVertical="3dp"
+            android:text="CONFIRMED"
+            android:textColor="#1B5E20"
+            android:textSize="10sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:layout_marginTop="8dp"
+        android:layout_marginBottom="10dp"
+        android:background="#E2EBE2" />
+
+    <!-- Title & Primary Details -->
+    <TextView
+        android:id="@+id/notif_exp_title"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Invoice #INV-20260830-01"
+        android:textColor="#1A201A"
+        android:textSize="15sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/notif_exp_customer"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:text="Customer: Ama Osei (0244123456)"
+        android:textColor="#3D4E3D"
+        android:textSize="12sp" />
+
+    <!-- Amount Summary Box -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:background="@drawable/widget_background"
+        android:orientation="horizontal"
+        android:padding="8dp">
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="TOTAL VALUE"
+                android:textColor="#667766"
+                android:textSize="9sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/notif_exp_total_amount"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="GH₵ 1,200.00"
+                android:textColor="#1B5E20"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <View
+            android:layout_width="1dp"
+            android:layout_height="28dp"
+            android:layout_marginHorizontal="6dp"
+            android:background="#C2DCBE" />
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/notif_exp_status_label"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="PAYMENT STATUS"
+                android:textColor="#667766"
+                android:textSize="9sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/notif_exp_payment_status"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Paid in Full (Cash)"
+                android:textColor="#1B5E20"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/notif_exp_footer_note"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="📱 Tap to view official receipt or share to customer on WhatsApp"
+        android:textColor="#5E705E"
+        android:textSize="10sp" />
+
+</LinearLayout>

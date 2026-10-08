@@ -1,0 +1,35 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="96dp"
+    android:height="96dp"
+    android:viewportWidth="96"
+    android:viewportHeight="96">
+    <!-- Background Circle -->
+    <path
+        android:fillColor="#FFF8E1"
+        android:pathData="M12,48 C12,28.1 28.1,12 48,12 C67.9,12 84,28.1 84,48 C84,67.9 67.9,84 48,84 C28.1,84 12,67.9 12,48 Z" />
+    <!-- Egg Tray / Crate base -->
+    <path
+        android:fillColor="#D7CCC8"
+        android:pathData="M18,60 L78,60 L72,74 L24,74 Z" />
+    <path
+        android:fillColor="#BCAAA4"
+        android:pathData="M18,60 L78,60 L76,64 L20,64 Z" />
+    <!-- Egg 1 (Left Brown Egg) -->
+    <path
+        android:fillColor="#E09F56"
+        android:pathData="M32,56 C24,56 22,40 30,32 C37,24 42,40 40,56 Z" />
+    <path
+        android:fillColor="#F4BF82"
+        android:pathData="M31,44 C28,44 27,37 32,34 C35,32 36,38 35,44 Z" />
+    <!-- Egg 2 (Right Brown Egg) -->
+    <path
+        android:fillColor="#D38A3A"
+        android:pathData="M64,56 C56,56 54,40 62,32 C69,24 74,40 72,56 Z" />
+    <!-- Egg 3 (Center Golden Egg) -->
+    <path
+        android:fillColor="#EDAE68"
+        android:pathData="M48,58 C38,58 36,36 46,26 C55,16 60,36 58,58 Z" />
+    <path
+        android:fillColor="#FFD39B"
+        android:pathData="M47,40 C43,40 42,30 47,27 C51,25 52,32 51,40 Z" />
+</vector>

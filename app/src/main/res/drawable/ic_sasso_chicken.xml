@@ -1,0 +1,45 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="96dp"
+    android:height="96dp"
+    android:viewportWidth="96"
+    android:viewportHeight="96">
+    <!-- Sasso Rustic Background Circle -->
+    <path
+        android:fillColor="#EFEBE9"
+        android:pathData="M12,48 C12,28.1 28.1,12 48,12 C67.9,12 84,28.1 84,48 C84,67.9 67.9,84 48,84 C28.1,84 12,67.9 12,48 Z" />
+    <!-- Tail Feathers (Dark Brown / Green sheen) -->
+    <path
+        android:fillColor="#3E2723"
+        android:pathData="M24,42 C20,32 26,24 34,30 C30,36 28,42 24,42 Z" />
+    <path
+        android:fillColor="#4E342E"
+        android:pathData="M26,46 C20,38 30,30 38,36 C34,42 30,46 26,46 Z" />
+    <!-- Sasso Body (Rich Reddish Chestnut Brown) -->
+    <path
+        android:fillColor="#A04000"
+        android:pathData="M30,52 C26,44 32,34 42,32 C50,30 56,36 60,40 C66,38 74,44 72,54 C70,64 56,68 42,66 C34,64 28,58 30,52 Z" />
+    <!-- Wing Feathers (Golden Speckled) -->
+    <path
+        android:fillColor="#D35400"
+        android:pathData="M40,48 C38,52 44,60 54,58 C60,56 58,48 50,46 C44,44 41,46 40,48 Z" />
+    <!-- Red Comb & Wattle -->
+    <path
+        android:fillColor="#C0392B"
+        android:pathData="M60,36 C60,28 66,28 67,31 C68,26 74,28 73,33 C76,30 80,34 78,38 C74,39 66,38 60,36 Z" />
+    <path
+        android:fillColor="#962D22"
+        android:pathData="M72,46 C74,48 72,52 69,50 C68,48 70,46 72,46 Z" />
+    <!-- Yellow Beak & Legs -->
+    <path
+        android:fillColor="#F39C12"
+        android:pathData="M74,42 L82,45 L74,48 Z" />
+    <path
+        android:fillColor="#212121"
+        android:pathData="M67,42 A2,2 0 1,0 67,38 A2,2 0 1,0 67,42 Z" />
+    <path
+        android:fillColor="#F39C12"
+        android:pathData="M44,65 L42,74 L46,74 L48,65 Z" />
+    <path
+        android:fillColor="#F39C12"
+        android:pathData="M52,65 L50,74 L54,74 L56,65 Z" />
+</vector>

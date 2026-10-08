@@ -1,0 +1,7 @@
+{
+  "name": "BizTrack",
+  "description": "All-in-one Business POS, Sales & Inventory Tracker, Customer Debt Manager with SMS/WhatsApp notifications, analytics, and multi-device cloud sync.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+

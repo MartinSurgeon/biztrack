@@ -1,0 +1,174 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/widget_background"
+    android:orientation="vertical"
+    android:padding="12dp">
+
+    <!-- Header Row -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <ImageView
+            android:layout_width="22dp"
+            android:layout_height="22dp"
+            android:src="@drawable/ic_naadriel_logo"
+            android:contentDescription="@string/app_name" />
+
+        <TextView
+            android:id="@+id/widget_business_title"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:layout_weight="1"
+            android:text="BizTrack"
+            android:textColor="#1B5E20"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/widget_time_label"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Updated just now"
+            android:textColor="#556B55"
+            android:textSize="10sp" />
+
+        <ImageView
+            android:id="@+id/widget_btn_refresh"
+            android:layout_width="20dp"
+            android:layout_height="20dp"
+            android:layout_marginStart="6dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:src="@android:drawable/ic_popup_sync"
+            android:tint="#1B5E20"
+            android:contentDescription="Refresh Widget" />
+    </LinearLayout>
+
+    <!-- Stats Grid Row -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_marginTop="8dp"
+        android:layout_marginBottom="8dp"
+        android:layout_weight="1"
+        android:orientation="horizontal">
+
+        <!-- Today's Sales Card -->
+        <LinearLayout
+            android:id="@+id/widget_sales_card"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_marginEnd="5dp"
+            android:layout_weight="1"
+            android:background="@drawable/widget_stat_card"
+            android:gravity="center_vertical"
+            android:orientation="vertical"
+            android:padding="8dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="TODAY'S SALES"
+                android:textColor="#556B55"
+                android:textSize="10sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/widget_today_sales_text"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:text="GH₵ 0.00"
+                android:textColor="#1B5E20"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/widget_today_orders_count"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="0 orders completed"
+                android:textColor="#748A74"
+                android:textSize="9sp" />
+        </LinearLayout>
+
+        <!-- Outstanding Debt Card -->
+        <LinearLayout
+            android:id="@+id/widget_debt_card"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_marginStart="5dp"
+            android:layout_weight="1"
+            android:background="@drawable/widget_stat_card"
+            android:gravity="center_vertical"
+            android:orientation="vertical"
+            android:padding="8dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="TOTAL OWED (DEBT)"
+                android:textColor="#8B3A3A"
+                android:textSize="10sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/widget_total_debt_text"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:text="GH₵ 0.00"
+                android:textColor="#C62828"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/widget_debtors_count"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="0 customers owing"
+                android:textColor="#885555"
+                android:textSize="9sp" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- Quick Actions Row -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+
+        <TextView
+            android:id="@+id/widget_btn_new_sale"
+            android:layout_width="0dp"
+            android:layout_height="32dp"
+            android:layout_marginEnd="4dp"
+            android:layout_weight="1"
+            android:background="@drawable/widget_button_bg"
+            android:gravity="center"
+            android:text="+ New Sale"
+            android:textColor="#FFFFFF"
+            android:textSize="11sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/widget_btn_debtors"
+            android:layout_width="0dp"
+            android:layout_height="32dp"
+            android:layout_marginStart="4dp"
+            android:layout_weight="1"
+            android:background="@drawable/widget_button_secondary_bg"
+            android:gravity="center"
+            android:text="👥 Debt Ledger"
+            android:textColor="#1B5E20"
+            android:textSize="11sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+
+</LinearLayout>

@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">BizTrack</string>
+    <string name="widget_name">BizTrack Sales Summary</string>
+    <string name="widget_description">Live summary of today\'s sales, customer debt, and quick business actions.</string>
+</resources>

@@ -1,0 +1,41 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="96dp"
+    android:height="96dp"
+    android:viewportWidth="96"
+    android:viewportHeight="96">
+    <!-- Live Broiler Circle background -->
+    <path
+        android:fillColor="#E8F5E9"
+        android:pathData="M12,48 C12,28.1 28.1,12 48,12 C67.9,12 84,28.1 84,48 C84,67.9 67.9,84 48,84 C28.1,84 12,67.9 12,48 Z" />
+    <!-- Broiler Body (White / Cream Plump) -->
+    <path
+        android:fillColor="#F5F5F0"
+        android:pathData="M28,52 C24,44 28,34 38,32 C48,30 52,36 56,40 C64,38 72,44 70,54 C68,64 54,68 40,66 C32,64 26,58 28,52 Z" />
+    <!-- Wing detail -->
+    <path
+        android:fillColor="#E0E0D6"
+        android:pathData="M38,48 C36,52 42,60 52,58 C58,56 56,48 48,46 C42,44 39,46 38,48 Z" />
+    <!-- Red Comb -->
+    <path
+        android:fillColor="#D32F2F"
+        android:pathData="M56,36 C56,30 62,30 63,33 C64,28 70,30 69,35 C72,32 76,36 74,40 C70,41 62,40 56,36 Z" />
+    <!-- Wattle -->
+    <path
+        android:fillColor="#C62828"
+        android:pathData="M70,46 C72,48 70,52 67,50 C66,48 68,46 70,46 Z" />
+    <!-- Beak (Yellow/Gold) -->
+    <path
+        android:fillColor="#FFA000"
+        android:pathData="M72,42 L80,45 L72,48 Z" />
+    <!-- Eye -->
+    <path
+        android:fillColor="#212121"
+        android:pathData="M65,42 A2,2 0 1,0 65,38 A2,2 0 1,0 65,42 Z" />
+    <!-- Legs -->
+    <path
+        android:fillColor="#FFA000"
+        android:pathData="M42,65 L40,74 L44,74 L46,65 Z" />
+    <path
+        android:fillColor="#FFA000"
+        android:pathData="M50,65 L48,74 L52,74 L54,65 Z" />
+</vector>
