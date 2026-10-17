@@ -11,14 +11,9 @@
  */
 
 header('Content-Type: application/json; charset=utf-8');
-header('Access-Control-Allow-Origin: *');
-header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type, X-Sync-Action, X-Api-Key, User-Agent');
-
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    http_response_code(200);
-    exit;
-}
+header('X-Content-Type-Options: nosniff');
+header('Cache-Control: no-store');
+// No CORS headers: the Android app is not a browser and needs none.
 
 // ==========================================
 // 1. CONFIGURATION (Edit with your cPanel info)
@@ -27,7 +22,19 @@ $DB_HOST        = 'localhost';
 $DB_NAME        = 'YOUR_CPANEL_USERNAME_farm_db'; // e.g., 'naadriel_farm_db'
 $DB_USER        = 'YOUR_CPANEL_USERNAME_farm_user';
 $DB_PASS        = 'YOUR_STRONG_DATABASE_PASSWORD';
-$API_SECRET_KEY = 'naadriel_farm_secret_2026'; // Match this in the Android App Settings!
+$API_SECRET_KEY = 'CHANGE_ME_TO_A_LONG_RANDOM_SECRET'; // 32+ random chars. Match this in the Android App Settings!
+
+// Optional: keep real credentials in config.php (never commit it) instead of editing this file.
+if (file_exists(__DIR__ . '/config.php')) {
+    require __DIR__ . '/config.php';
+}
+
+// Refuse to run with a missing, default or weak secret.
+if (strlen($API_SECRET_KEY) < 24 || strpos($API_SECRET_KEY, 'CHANGE_ME') !== false) {
+    http_response_code(503);
+    echo json_encode(['status' => 'error', 'message' => 'Server not configured: set a strong API_SECRET_KEY.']);
+    exit;
+}
 
 // ==========================================
 // 2. CONNECT TO MYSQL (PDO)
@@ -45,10 +52,8 @@ try {
     );
 } catch (PDOException $e) {
     http_response_code(500);
-    echo json_encode([
-        'status'  => 'error',
-        'message' => 'Database connection failed: ' . $e->getMessage()
-    ]);
+    error_log('BizTrack sync DB connection failed: ' . $e->getMessage());
+    echo json_encode(['status' => 'error', 'message' => 'Database connection failed.']);
     exit;
 }
 
@@ -56,8 +61,8 @@ try {
 // 3. HEALTH CHECK (GET Request)
 // ==========================================
 if ($_SERVER['REQUEST_METHOD'] === 'GET') {
-    $headerKey = $_SERVER['HTTP_X_API_KEY'] ?? $_GET['key'] ?? '';
-    if (!empty($API_SECRET_KEY) && $headerKey !== $API_SECRET_KEY) {
+    $headerKey = (string)($_SERVER['HTTP_X_API_KEY'] ?? '');
+    if (!hash_equals($API_SECRET_KEY, $headerKey)) {
         http_response_code(401);
         echo json_encode([
             'status'  => 'error',
@@ -80,8 +85,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
 $rawInput = file_get_contents('php://input');
 $data     = json_decode($rawInput, true);
 
-$providedKey = $data['secretKey'] ?? $_SERVER['HTTP_X_API_KEY'] ?? '';
-if (!empty($API_SECRET_KEY) && $providedKey !== $API_SECRET_KEY) {
+$providedKey = (string)($data['secretKey'] ?? $_SERVER['HTTP_X_API_KEY'] ?? '');
+if (!hash_equals($API_SECRET_KEY, $providedKey)) {
     http_response_code(401);
     echo json_encode([
         'status'  => 'error',
@@ -221,13 +226,13 @@ if (strtoupper($action) === 'PULL') {
             'businessPhone'       => (string)($settingsRow['businessPhone'] ?? '024 000 0000'),
             'businessLocation'    => (string)($settingsRow['businessLocation'] ?? 'Ghana'),
             'momoPaymentDetails'  => (string)($settingsRow['momoPaymentDetails'] ?? 'MTN MoMo: 0244XXXXXX (BizTrack)'),
-            'smsApiKey'           => (string)($settingsRow['smsApiKey'] ?? ''),
+            'smsApiKey'           => '', // secrets are never sent back to devices
             'smsSenderId'         => (string)($settingsRow['smsSenderId'] ?? 'BizTrack'),
             'smsAutoSendOnSale'   => isset($settingsRow['smsAutoSendOnSale']) ? (bool)$settingsRow['smsAutoSendOnSale'] : true,
             'smsAutoSendOnPayment'=> isset($settingsRow['smsAutoSendOnPayment']) ? (bool)$settingsRow['smsAutoSendOnPayment'] : true,
             'currencySymbol'      => (string)($settingsRow['currencySymbol'] ?? 'GH₵'),
             'cloudSyncUrl'        => (string)($settingsRow['cloudSyncUrl'] ?? ''),
-            'cloudSyncSecretKey'  => (string)($settingsRow['cloudSyncSecretKey'] ?? ''),
+            'cloudSyncSecretKey'  => '',
             'cloudAutoSyncOnSale' => isset($settingsRow['cloudAutoSyncOnSale']) ? (bool)$settingsRow['cloudAutoSyncOnSale'] : false,
             'lastCloudSyncTime'   => (int)($settingsRow['lastCloudSyncTime'] ?? 0),
             'lastCloudSyncStatus' => (string)($settingsRow['lastCloudSyncStatus'] ?? 'Synced')

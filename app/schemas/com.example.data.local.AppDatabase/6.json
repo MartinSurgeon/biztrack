@@ -1,0 +1,521 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 6,
+    "identityHash": "7b73e0ea5ce2a06328848c4034916d86",
+    "entities": [
+      {
+        "tableName": "products",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `category` TEXT NOT NULL, `unit` TEXT NOT NULL, `unitPrice` REAL NOT NULL, `costPrice` REAL NOT NULL, `stockQuantity` REAL NOT NULL, `minStockThreshold` REAL NOT NULL, `inStock` INTEGER NOT NULL, `description` TEXT NOT NULL, `imageUri` TEXT NOT NULL, `lastRestockedAt` INTEGER NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "category",
+            "columnName": "category",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "unit",
+            "columnName": "unit",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "unitPrice",
+            "columnName": "unitPrice",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "costPrice",
+            "columnName": "costPrice",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "stockQuantity",
+            "columnName": "stockQuantity",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "minStockThreshold",
+            "columnName": "minStockThreshold",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "inStock",
+            "columnName": "inStock",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "description",
+            "columnName": "description",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "imageUri",
+            "columnName": "imageUri",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastRestockedAt",
+            "columnName": "lastRestockedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        }
+      },
+      {
+        "tableName": "inventory_logs",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `productId` INTEGER NOT NULL, `productName` TEXT NOT NULL, `changeType` TEXT NOT NULL, `quantityChanged` REAL NOT NULL, `quantityAfter` REAL NOT NULL, `unit` TEXT NOT NULL, `notes` TEXT NOT NULL, `timestamp` INTEGER NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "productId",
+            "columnName": "productId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "productName",
+            "columnName": "productName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "changeType",
+            "columnName": "changeType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "quantityChanged",
+            "columnName": "quantityChanged",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "quantityAfter",
+            "columnName": "quantityAfter",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "unit",
+            "columnName": "unit",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "notes",
+            "columnName": "notes",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "timestamp",
+            "columnName": "timestamp",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        }
+      },
+      {
+        "tableName": "customers",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `phone` TEXT NOT NULL, `whatsapp` TEXT NOT NULL, `address` TEXT NOT NULL, `notes` TEXT NOT NULL, `totalPurchases` REAL NOT NULL, `totalPaid` REAL NOT NULL, `currentBalance` REAL NOT NULL, `createdAt` INTEGER NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "phone",
+            "columnName": "phone",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "whatsapp",
+            "columnName": "whatsapp",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "address",
+            "columnName": "address",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "notes",
+            "columnName": "notes",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "totalPurchases",
+            "columnName": "totalPurchases",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "totalPaid",
+            "columnName": "totalPaid",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "currentBalance",
+            "columnName": "currentBalance",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        }
+      },
+      {
+        "tableName": "sales_orders",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `invoiceNumber` TEXT NOT NULL, `customerId` INTEGER NOT NULL, `customerName` TEXT NOT NULL, `customerPhone` TEXT NOT NULL, `customerWhatsapp` TEXT NOT NULL, `itemsJson` TEXT NOT NULL, `totalAmount` REAL NOT NULL, `discountAmount` REAL NOT NULL, `amountPaid` REAL NOT NULL, `balanceDue` REAL NOT NULL, `paymentStatus` TEXT NOT NULL, `paymentMethod` TEXT NOT NULL, `notes` TEXT NOT NULL, `timestamp` INTEGER NOT NULL, `smsSentCount` INTEGER NOT NULL, `lastSmsTimestamp` INTEGER)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "invoiceNumber",
+            "columnName": "invoiceNumber",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "customerId",
+            "columnName": "customerId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "customerName",
+            "columnName": "customerName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "customerPhone",
+            "columnName": "customerPhone",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "customerWhatsapp",
+            "columnName": "customerWhatsapp",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "itemsJson",
+            "columnName": "itemsJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "totalAmount",
+            "columnName": "totalAmount",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "discountAmount",
+            "columnName": "discountAmount",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "amountPaid",
+            "columnName": "amountPaid",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "balanceDue",
+            "columnName": "balanceDue",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "paymentStatus",
+            "columnName": "paymentStatus",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "paymentMethod",
+            "columnName": "paymentMethod",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "notes",
+            "columnName": "notes",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "timestamp",
+            "columnName": "timestamp",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "smsSentCount",
+            "columnName": "smsSentCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastSmsTimestamp",
+            "columnName": "lastSmsTimestamp",
+            "affinity": "INTEGER"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        }
+      },
+      {
+        "tableName": "payments",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `customerId` INTEGER NOT NULL, `customerName` TEXT NOT NULL, `saleOrderId` INTEGER, `amount` REAL NOT NULL, `paymentMethod` TEXT NOT NULL, `notes` TEXT NOT NULL, `timestamp` INTEGER NOT NULL, `balanceAfterPayment` REAL NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "customerId",
+            "columnName": "customerId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "customerName",
+            "columnName": "customerName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "saleOrderId",
+            "columnName": "saleOrderId",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "amount",
+            "columnName": "amount",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "paymentMethod",
+            "columnName": "paymentMethod",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "notes",
+            "columnName": "notes",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "timestamp",
+            "columnName": "timestamp",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "balanceAfterPayment",
+            "columnName": "balanceAfterPayment",
+            "affinity": "REAL",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        }
+      },
+      {
+        "tableName": "app_settings",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER NOT NULL, `businessName` TEXT NOT NULL, `businessTagline` TEXT NOT NULL, `businessPhone` TEXT NOT NULL, `businessLocation` TEXT NOT NULL, `momoPaymentDetails` TEXT NOT NULL, `smsApiKey` TEXT NOT NULL, `smsSenderId` TEXT NOT NULL, `smsAutoSendOnSale` INTEGER NOT NULL, `smsAutoSendOnPayment` INTEGER NOT NULL, `currencySymbol` TEXT NOT NULL, `cloudSyncUrl` TEXT NOT NULL, `cloudSyncSecretKey` TEXT NOT NULL, `cloudAutoSyncOnSale` INTEGER NOT NULL, `lastCloudSyncTime` INTEGER NOT NULL, `lastCloudSyncStatus` TEXT NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "businessName",
+            "columnName": "businessName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "businessTagline",
+            "columnName": "businessTagline",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "businessPhone",
+            "columnName": "businessPhone",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "businessLocation",
+            "columnName": "businessLocation",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "momoPaymentDetails",
+            "columnName": "momoPaymentDetails",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "smsApiKey",
+            "columnName": "smsApiKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "smsSenderId",
+            "columnName": "smsSenderId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "smsAutoSendOnSale",
+            "columnName": "smsAutoSendOnSale",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "smsAutoSendOnPayment",
+            "columnName": "smsAutoSendOnPayment",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "currencySymbol",
+            "columnName": "currencySymbol",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "cloudSyncUrl",
+            "columnName": "cloudSyncUrl",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "cloudSyncSecretKey",
+            "columnName": "cloudSyncSecretKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "cloudAutoSyncOnSale",
+            "columnName": "cloudAutoSyncOnSale",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastCloudSyncTime",
+            "columnName": "lastCloudSyncTime",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastCloudSyncStatus",
+            "columnName": "lastCloudSyncStatus",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        }
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '7b73e0ea5ce2a06328848c4034916d86')"
+    ]
+  }
+}

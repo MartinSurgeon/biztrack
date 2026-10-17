@@ -41,7 +41,9 @@ object DatabaseBackupHelper {
         val now = System.currentTimeMillis()
         val dateFormatted = SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.getDefault()).format(Date(now))
 
+        // Secrets never go into backup files: they get shared by email/WhatsApp. Restore keeps the phone's own keys.
         val settings = database.appSettingsDao().getSettingsDirect()
+            ?.copy(smsApiKey = "", cloudSyncSecretKey = "")
         val products = database.productDao().getAllProductsDirect()
         val customers = database.customerDao().getAllCustomersDirect()
         val salesOrders = database.saleOrderDao().getAllOrdersDirect()

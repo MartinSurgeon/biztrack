@@ -18,15 +18,18 @@ This web interface allows you to manage your business inventory, sales, customer
    - In cPanel **File Manager**, open `public_html/` (or a subdirectory like `public_html/farm/` or `public_html/api/`).
    - Upload `index.php`, `sync.php`, and import `schema.sql` into your phpMyAdmin database.
 
-2. **Configure Database Connection in `index.php`**:
-   Open `index.php` on your server and make sure lines 18–24 match your MySQL database credentials:
+2. **Create `config.php`** next to `sync.php` (never commit it):
    ```php
-   define('DB_HOST', 'localhost');
-   define('DB_NAME', 'your_cpanel_db_name');
-   define('DB_USER', 'your_cpanel_db_user');
-   define('DB_PASS', 'your_cpanel_db_password');
-   define('SECRET_KEY', 'Naadriel@Farm2026!SecKey');
+   <?php
+   $DB_HOST = 'localhost';
+   $DB_NAME = 'your_cpanel_db_name';
+   $DB_USER = 'your_cpanel_db_user';
+   $DB_PASS = 'your_cpanel_db_password';
+   $API_SECRET_KEY = 'a-long-random-string-of-32-or-more-characters';
+   $SECRET_KEY = $API_SECRET_KEY;
    ```
+   Or open `index.php` once and use the setup form (it only works while `config.php` does not exist). `sync.php` refuses to run with a missing, default or short (<24 chars) key. Use the same key in the Android app (Settings > Cloud Sync) and for web login. Serve over **HTTPS only**.
+
 
 3. **Access from Your Laptop**:
    - Open your laptop browser and go to: `https://yourdomain.com/farm/index.php`

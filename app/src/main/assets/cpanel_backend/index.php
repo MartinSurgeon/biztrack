@@ -9,14 +9,36 @@
  * =========================================================================
  */
 
-// Enable full error reporting to diagnose issues rather than showing a blank 500 error
-ini_set('display_errors', '1');
-ini_set('display_startup_errors', '1');
+// Never show errors to visitors (they leak paths and SQL); log them server-side instead.
+ini_set('display_errors', '0');
+ini_set('display_startup_errors', '0');
+ini_set('log_errors', '1');
 error_reporting(E_ALL);
 
-// Safe session startup
+header('X-Frame-Options: DENY');
+header('X-Content-Type-Options: nosniff');
+header('Referrer-Policy: no-referrer');
+
+// Safe session startup with hardened cookie
 if (session_status() === PHP_SESSION_NONE) {
+    session_set_cookie_params([
+        'lifetime' => 0,
+        'path'     => '/',
+        'secure'   => !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off',
+        'httponly' => true,
+        'samesite' => 'Strict',
+    ]);
     @session_start();
+}
+
+// CSRF token: every POST form must carry it.
+if (empty($_SESSION['csrf'])) {
+    $_SESSION['csrf'] = bin2hex(random_bytes(32));
+}
+if ($_SERVER['REQUEST_METHOD'] === 'POST'
+    && !hash_equals($_SESSION['csrf'], (string)($_POST['csrf'] ?? ''))) {
+    http_response_code(403);
+    exit('Invalid or expired form token. Go back, reload the page and try again.');
 }
 
 // ----------------------------------------------------
@@ -29,7 +51,7 @@ $DB_HOST = 'localhost';
 $DB_NAME = '';
 $DB_USER = '';
 $DB_PASS = '';
-$SECRET_KEY = 'naadriel_farm_secret_2026';
+$SECRET_KEY = '';
 
 // 1. Try loading from custom config.php if saved
 if (file_exists($configFile)) {
@@ -56,17 +78,30 @@ if (empty($SECRET_KEY)) {
     } elseif (defined('SECRET_KEY')) {
         $SECRET_KEY = constant('SECRET_KEY');
     } else {
-        $SECRET_KEY = 'naadriel_farm_secret_2026';
+        $SECRET_KEY = '';
     }
 }
 
-// Handle Configuration Save from Web UI
+// A missing, default or short secret means the server is not safely configured.
+$secretIsWeak = strlen((string)$SECRET_KEY) < 24 || strpos((string)$SECRET_KEY, 'CHANGE_ME') !== false;
+
+// Handle Configuration Save from Web UI.
+// Only allowed during first-time setup (no config.php yet) or by a logged-in admin;
+// otherwise any visitor could point the dashboard at their own database and key.
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_db_config'])) {
+    if (file_exists($configFile) && empty($_SESSION['naadriel_auth'])) {
+        http_response_code(403);
+        exit('Configuration is locked. Delete config.php on the server to run setup again.');
+    }
     $newHost = trim($_POST['db_host'] ?? 'localhost');
     $newName = trim($_POST['db_name'] ?? '');
     $newUser = trim($_POST['db_user'] ?? '');
     $newPass = trim($_POST['db_pass'] ?? '');
-    $newKey  = trim($_POST['secret_key'] ?? 'naadriel_farm_secret_2026');
+    $newKey  = trim($_POST['secret_key'] ?? '');
+    if (strlen($newKey) < 24 || strpos($newKey, 'CHANGE_ME') !== false) {
+        header("Location: index.php?err=" . urlencode("Secret key must be at least 24 characters."));
+        exit;
+    }
 
     $configContent = "<?php\n"
         . "\$DB_HOST = " . var_export($newHost, true) . ";\n"
@@ -76,7 +111,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_db_config'])) {
         . "\$SECRET_KEY = " . var_export($newKey, true) . ";\n"
         . "\$API_SECRET_KEY = " . var_export($newKey, true) . ";\n";
 
-    @file_put_contents($configFile, $configContent);
+    @file_put_contents($configFile, $configContent, LOCK_EX);
+    @chmod($configFile, 0600);
     header("Location: index.php?msg=" . urlencode("Database configuration saved successfully!"));
     exit;
 }
@@ -237,7 +273,7 @@ if (!empty($DB_NAME) && !empty($DB_USER)) {
         }
 
     } catch (PDOException $e) {
-        $dbError = $e->getMessage();
+        error_log("BizTrack dashboard DB error: " . $e->getMessage()); $dbError = "Could not connect to the database. Check the credentials.";
     }
 } else {
     $dbError = "Database credentials are not yet configured.";
@@ -276,6 +312,7 @@ if (!$db) {
             <?php endif; ?>
 
             <form method="POST" action="index.php" class="space-y-4">
+                <input type="hidden" name="csrf" value="<?= htmlspecialchars($_SESSION['csrf'] ?? '') ?>">
                 <input type="hidden" name="save_db_config" value="1">
                 <div>
                     <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Database Host</label>
@@ -291,11 +328,11 @@ if (!$db) {
                 </div>
                 <div>
                     <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Database Password</label>
-                    <input type="password" name="db_pass" value="<?= htmlspecialchars($DB_PASS) ?>" placeholder="Enter MySQL Password" class="w-full px-4 py-3 bg-slate-950 border border-slate-800 rounded-xl text-white">
+                    <input type="password" name="db_pass" value="" placeholder="Enter MySQL Password" class="w-full px-4 py-3 bg-slate-950 border border-slate-800 rounded-xl text-white">
                 </div>
                 <div>
                     <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Secret Key (Matches Mobile App Settings)</label>
-                    <input type="text" name="secret_key" value="<?= htmlspecialchars($SECRET_KEY ?: 'naadriel_farm_secret_2026') ?>" required class="w-full px-4 py-3 bg-slate-950 border border-slate-800 rounded-xl text-white">
+                    <input type="text" name="secret_key" value="" minlength="24" placeholder="At least 24 random characters" required class="w-full px-4 py-3 bg-slate-950 border border-slate-800 rounded-xl text-white">
                 </div>
                 <button type="submit" class="w-full py-4 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl shadow-lg shadow-emerald-900/40 transition-all">
                     Connect & Open Dashboard
@@ -321,11 +358,25 @@ if (isset($_GET['logout'])) {
 $loginError = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['auth_action']) && $_POST['auth_action'] === 'login') {
     $enteredKey = trim($_POST['secret_key'] ?? '');
-    if ($enteredKey === $SECRET_KEY || empty($SECRET_KEY)) {
+    $lockedUntil = (int)($_SESSION['login_locked_until'] ?? 0);
+    if ($lockedUntil > time()) {
+        $loginError = "Too many failed attempts. Try again in " . ($lockedUntil - time()) . " seconds.";
+    } elseif ($secretIsWeak) {
+        $loginError = "Server secret key is missing or too weak. Set a 24+ character key in config.php.";
+    } elseif (hash_equals((string)$SECRET_KEY, $enteredKey)) {
+        session_regenerate_id(true);
+        $_SESSION['csrf'] = bin2hex(random_bytes(32));
         $_SESSION['naadriel_auth'] = true;
+        unset($_SESSION['login_fails'], $_SESSION['login_locked_until']);
         header("Location: index.php");
         exit;
     } else {
+        $_SESSION['login_fails'] = (int)($_SESSION['login_fails'] ?? 0) + 1;
+        if ($_SESSION['login_fails'] >= 5) {
+            $_SESSION['login_locked_until'] = time() + 300;
+            $_SESSION['login_fails'] = 0;
+        }
+        sleep(1);
         $loginError = "Invalid Secret Key. Please check the key in your Android App Settings.";
     }
 }
@@ -363,6 +414,7 @@ if (!$isLoggedIn) {
             <?php endif; ?>
 
             <form method="POST" action="index.php" class="space-y-5">
+                <input type="hidden" name="csrf" value="<?= htmlspecialchars($_SESSION['csrf'] ?? '') ?>">
                 <input type="hidden" name="auth_action" value="login">
                 <div>
                     <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-2">Cloud Secret Key</label>
@@ -912,6 +964,7 @@ $allCustomers = $db->query("SELECT * FROM customers ORDER BY name ASC")->fetchAl
                 </div>
 
                 <form method="POST" action="index.php" id="saleForm" class="space-y-6">
+                    <input type="hidden" name="csrf" value="<?= htmlspecialchars($_SESSION['csrf'] ?? '') ?>">
                     <input type="hidden" name="action" value="create_sale">
 
                     <!-- Customer Selection -->
@@ -1156,7 +1209,8 @@ $allCustomers = $db->query("SELECT * FROM customers ORDER BY name ASC")->fetchAl
                                             <button onclick="openEditProductModal(<?= htmlspecialchars(json_encode($p)) ?>)" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-medium">
                                                 Edit
                                             </button>
-                                            <form method="POST" action="index.php" class="inline" onsubmit="return confirm('Delete <?= htmlspecialchars($p['name']) ?>?')">
+                                            <form method="POST" action="index.php" class="inline" onsubmit="return confirm('Delete <?= htmlspecialchars($p['name']) ?>
+                                                <input type="hidden" name="csrf" value="<?= htmlspecialchars($_SESSION['csrf'] ?? '') ?>">?')">
                                                 <input type="hidden" name="action" value="delete_product">
                                                 <input type="hidden" name="id" value="<?= $p['id'] ?>">
                                                 <button type="submit" class="px-2.5 py-1 bg-rose-950/40 hover:bg-rose-900/60 text-rose-400 rounded-lg text-xs font-medium">
@@ -1180,6 +1234,7 @@ $allCustomers = $db->query("SELECT * FROM customers ORDER BY name ASC")->fetchAl
                         <button onclick="document.getElementById('newProductModal').classList.add('hidden')" class="text-slate-400 hover:text-white font-bold text-xl">&times;</button>
                     </div>
                     <form method="POST" action="index.php" class="space-y-4">
+                        <input type="hidden" name="csrf" value="<?= htmlspecialchars($_SESSION['csrf'] ?? '') ?>">
                         <input type="hidden" name="action" value="create_product">
                         <div>
                             <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Product Name</label>
@@ -1241,6 +1296,7 @@ $allCustomers = $db->query("SELECT * FROM customers ORDER BY name ASC")->fetchAl
                         <button onclick="document.getElementById('editProductModal').classList.add('hidden')" class="text-slate-400 hover:text-white font-bold text-xl">&times;</button>
                     </div>
                     <form method="POST" action="index.php" class="space-y-4">
+                        <input type="hidden" name="csrf" value="<?= htmlspecialchars($_SESSION['csrf'] ?? '') ?>">
                         <input type="hidden" name="action" value="update_product">
                         <input type="hidden" name="id" id="edit_p_id">
                         <div>
@@ -1303,6 +1359,7 @@ $allCustomers = $db->query("SELECT * FROM customers ORDER BY name ASC")->fetchAl
                         <button onclick="document.getElementById('restockModal').classList.add('hidden')" class="text-slate-400 hover:text-white font-bold text-xl">&times;</button>
                     </div>
                     <form method="POST" action="index.php" class="space-y-4">
+                        <input type="hidden" name="csrf" value="<?= htmlspecialchars($_SESSION['csrf'] ?? '') ?>">
                         <input type="hidden" name="action" value="restock_product">
                         <input type="hidden" name="id" id="restock_p_id">
                         <div class="p-3 bg-slate-950 rounded-xl border border-slate-800">
@@ -1478,7 +1535,8 @@ $allCustomers = $db->query("SELECT * FROM customers ORDER BY name ASC")->fetchAl
                                             <button onclick="openEditCustomerModal(<?= htmlspecialchars(json_encode($c)) ?>)" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-medium">
                                                 Edit
                                             </button>
-                                            <form method="POST" action="index.php" class="inline" onsubmit="return confirm('Delete <?= htmlspecialchars($c['name']) ?>?')">
+                                            <form method="POST" action="index.php" class="inline" onsubmit="return confirm('Delete <?= htmlspecialchars($c['name']) ?>
+                                                <input type="hidden" name="csrf" value="<?= htmlspecialchars($_SESSION['csrf'] ?? '') ?>">?')">
                                                 <input type="hidden" name="action" value="delete_customer">
                                                 <input type="hidden" name="id" value="<?= $c['id'] ?>">
                                                 <button type="submit" class="px-2.5 py-1 bg-rose-950/40 hover:bg-rose-900/60 text-rose-400 rounded-lg text-xs font-medium">
@@ -1502,6 +1560,7 @@ $allCustomers = $db->query("SELECT * FROM customers ORDER BY name ASC")->fetchAl
                         <button onclick="document.getElementById('newCustomerModal').classList.add('hidden')" class="text-slate-400 hover:text-white font-bold text-xl">&times;</button>
                     </div>
                     <form method="POST" action="index.php" class="space-y-4">
+                        <input type="hidden" name="csrf" value="<?= htmlspecialchars($_SESSION['csrf'] ?? '') ?>">
                         <input type="hidden" name="action" value="create_customer">
                         <div>
                             <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Customer Full Name</label>
@@ -1544,6 +1603,7 @@ $allCustomers = $db->query("SELECT * FROM customers ORDER BY name ASC")->fetchAl
                         <button onclick="document.getElementById('editCustomerModal').classList.add('hidden')" class="text-slate-400 hover:text-white font-bold text-xl">&times;</button>
                     </div>
                     <form method="POST" action="index.php" class="space-y-4">
+                        <input type="hidden" name="csrf" value="<?= htmlspecialchars($_SESSION['csrf'] ?? '') ?>">
                         <input type="hidden" name="action" value="update_customer">
                         <input type="hidden" name="id" id="edit_c_id">
                         <div>
@@ -1706,6 +1766,7 @@ $allCustomers = $db->query("SELECT * FROM customers ORDER BY name ASC")->fetchAl
 
                 <div class="glass-card p-6 lg:p-8 rounded-2xl">
                     <form method="POST" action="index.php" class="space-y-5">
+                        <input type="hidden" name="csrf" value="<?= htmlspecialchars($_SESSION['csrf'] ?? '') ?>">
                         <input type="hidden" name="action" value="update_settings">
                         <div>
                             <label class="block text-xs font-semibold text-slate-300 uppercase mb-2">Farm / Business Name</label>
@@ -1750,6 +1811,7 @@ $allCustomers = $db->query("SELECT * FROM customers ORDER BY name ASC")->fetchAl
                 <button onclick="document.getElementById('paymentModal').classList.add('hidden')" class="text-slate-400 hover:text-white font-bold text-xl">&times;</button>
             </div>
             <form method="POST" action="index.php" class="space-y-4">
+                <input type="hidden" name="csrf" value="<?= htmlspecialchars($_SESSION['csrf'] ?? '') ?>">
                 <input type="hidden" name="action" value="record_payment">
                 <input type="hidden" name="customer_id" id="pay_cust_id">
                 <div class="p-3 bg-slate-950 rounded-xl border border-slate-800 space-y-1">
