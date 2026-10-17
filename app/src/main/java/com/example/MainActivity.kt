@@ -36,8 +36,14 @@ import com.example.ui.components.ReceiptDialog
 import com.example.ui.components.RecordPaymentDialog
 import com.example.ui.components.SmsPreviewDialog
 import com.example.ui.screens.*
-import com.example.ui.theme.BrandGreenPrimary
-import com.example.ui.theme.DebtRed
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.unit.sp
+import com.example.ui.theme.AppTheme
 import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.viewmodel.FarmViewModel
 import com.example.util.Formatters
@@ -46,16 +52,96 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
+// Declaration order is the tab bar order; NEW_SALE sits in the middle as the raised action.
+// Enum names double as deep-link targets from notifications and the widget, so keep them stable.
 enum class Screen(
     val title: String,
     val selectedIcon: ImageVector,
     val unselectedIcon: ImageVector
 ) {
     DASHBOARD("Home", Icons.Filled.Home, Icons.Outlined.Home),
-    NEW_SALE("New Sale", Icons.Filled.AddShoppingCart, Icons.Outlined.AddShoppingCart),
-    DEBTORS("Debtors", Icons.Filled.People, Icons.Outlined.People),
-    PRODUCTS("Prices", Icons.Filled.Egg, Icons.Outlined.Egg),
+    DEBTORS("Customers", Icons.Filled.People, Icons.Outlined.People),
+    NEW_SALE("Sell", Icons.Filled.Add, Icons.Filled.Add),
+    PRODUCTS("Products", Icons.Filled.Inventory2, Icons.Outlined.Inventory2),
     SETTINGS("Settings", Icons.Filled.Settings, Icons.Outlined.Settings)
+}
+
+@Composable
+private fun AppTabBar(
+    currentScreen: Screen,
+    onSelect: (Screen) -> Unit,
+    debtorCount: Int,
+    cartCount: Int
+) {
+    val colors = MaterialTheme.colorScheme
+    Column(modifier = Modifier.background(colors.surface)) {
+        HorizontalDivider(thickness = 1.dp, color = colors.outlineVariant)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .windowInsetsPadding(WindowInsets.navigationBars)
+                .height(64.dp)
+                .testTag("main_navigation_bar"),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Screen.entries.forEach { screen ->
+                val isSelected = currentScreen == screen
+                val tint = if (isSelected) colors.primary else colors.onSurfaceVariant
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            onClick = { onSelect(screen) }
+                        )
+                        .testTag("nav_item_${screen.name.lowercase()}"),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (screen == Screen.NEW_SALE) {
+                        BadgedBox(badge = {
+                            if (cartCount > 0) Badge(containerColor = AppTheme.status.danger, contentColor = AppTheme.status.onDanger) { Text(cartCount.toString()) }
+                        }) {
+                            Box(
+                                modifier = Modifier
+                                    .size(52.dp)
+                                    .shadow(8.dp, CircleShape, spotColor = colors.primary.copy(alpha = 0.5f))
+                                    .clip(CircleShape)
+                                    .background(colors.primary),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(Icons.Filled.Add, contentDescription = screen.title, tint = colors.onPrimary, modifier = Modifier.size(28.dp))
+                            }
+                        }
+                    } else {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            BadgedBox(badge = {
+                                if (screen == Screen.DEBTORS && debtorCount > 0) {
+                                    Badge(containerColor = AppTheme.status.danger, contentColor = AppTheme.status.onDanger) { Text(debtorCount.toString()) }
+                                }
+                            }) {
+                                Icon(
+                                    imageVector = if (isSelected) screen.selectedIcon else screen.unselectedIcon,
+                                    contentDescription = null,
+                                    tint = tint,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
+                            Spacer(Modifier.height(3.dp))
+                            Text(
+                                text = screen.title,
+                                fontSize = 11.sp,
+                                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
+                                color = tint,
+                                maxLines = 1
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 class MainActivity : ComponentActivity() {
@@ -182,63 +268,22 @@ fun MainAppContent(
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
+        containerColor = MaterialTheme.colorScheme.background,
         snackbarHost = { SnackbarHost(snackbarHostState) },
         bottomBar = {
-            NavigationBar(
-                modifier = Modifier
-                    .windowInsetsPadding(WindowInsets.navigationBars)
-                    .testTag("main_navigation_bar"),
-                containerColor = MaterialTheme.colorScheme.surface,
-                tonalElevation = 8.dp
-            ) {
-                Screen.values().forEach { screen ->
-                    val isSelected = currentScreen == screen
-                    NavigationBarItem(
-                        selected = isSelected,
-                        onClick = { currentScreen = screen },
-                        modifier = Modifier.testTag("nav_item_${screen.name.lowercase()}"),
-                        icon = {
-                            BadgedBox(
-                                badge = {
-                                    if (screen == Screen.DEBTORS && debtors.isNotEmpty()) {
-                                        Badge(containerColor = DebtRed) {
-                                            Text(debtors.size.toString(), color = Color.White)
-                                        }
-                                    } else if (screen == Screen.NEW_SALE && cart.isNotEmpty()) {
-                                        Badge(containerColor = MaterialTheme.colorScheme.primary) {
-                                            Text(cart.values.sumOf { it.quantity }.toInt().toString(), color = Color.White)
-                                        }
-                                    }
-                                }
-                            ) {
-                                Icon(
-                                    imageVector = if (isSelected) screen.selectedIcon else screen.unselectedIcon,
-                                    contentDescription = screen.title,
-                                    tint = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        },
-                        label = {
-                            Text(
-                                text = screen.title,
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        },
-                        colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = MaterialTheme.colorScheme.primary,
-                            selectedTextColor = MaterialTheme.colorScheme.primary,
-                            indicatorColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
-                        )
-                    )
-                }
-            }
+            AppTabBar(
+                currentScreen = currentScreen,
+                onSelect = { currentScreen = it },
+                debtorCount = debtors.size,
+                cartCount = cart.values.sumOf { it.quantity }.toInt()
+            )
         }
     ) { innerPadding ->
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
+                .consumeWindowInsets(innerPadding)
         ) {
             AnimatedContent(
                 targetState = currentScreen,
@@ -272,7 +317,8 @@ fun MainAppContent(
                                 )
                             },
                             onEditOrder = { order -> viewModel.orderToEdit.value = order },
-                            onVoidOrder = { order -> viewModel.voidSaleOrder(order) }
+                            onVoidOrder = { order -> viewModel.voidSaleOrder(order) },
+                            products = products
                         )
                     }
                     Screen.NEW_SALE -> {

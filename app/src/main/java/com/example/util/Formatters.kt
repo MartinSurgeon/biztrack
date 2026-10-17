@@ -97,7 +97,7 @@ object Formatters {
             sb.append("📞 Tel: ${settings.businessPhone}\n")
         }
         sb.append("━━━━━━━━━━━━━━━━━━━━\n")
-        sb.append("_Thank you for choosing our farm Products, we look forward to serving you again!_")
+        sb.append("_Thank you for your business, we look forward to serving you again!_")
 
         return sb.toString()
     }
@@ -146,7 +146,7 @@ object Formatters {
         if (settings.businessPhone.isNotBlank()) {
             sb.append("📞 Contact: ${settings.businessPhone}\n")
         }
-        sb.append("\n_Thank you for choosing our farm Products, we look forward to serving you again!_\n")
+        sb.append("\n_Thank you for your business, we look forward to serving you again!_\n")
         sb.append("━━━━━━━━━━━━━━━━━━━━")
 
         return sb.toString()
@@ -160,7 +160,7 @@ object Formatters {
         val itemsSummary = if (items.isNotEmpty()) {
             items.joinToString(", ") { "${if (it.quantity % 1.0 == 0.0) it.quantity.toInt() else it.quantity} ${it.productName}" }
         } else {
-            "farm products"
+            "your items"
         }
 
         val discountNote = if (order.discountAmount > 0) " (Discount: -${formatCurrency(order.discountAmount, settings.currencySymbol)})" else ""
@@ -183,17 +183,17 @@ object Formatters {
         unpaidOrders: List<SaleOrderEntity> = emptyList()
     ): String {
         val currency = settings.currencySymbol
-        val momo = if (settings.momoPaymentDetails.isNotBlank()) " Pay via MoMo to ${settings.momoPaymentDetails}." else ""
+        val momo = if (settings.momoPaymentDetails.isNotBlank()) " Pay via ${settings.momoPaymentDetails}." else ""
         val tel = if (settings.businessPhone.isNotBlank()) " Tel: ${settings.businessPhone}." else ""
         
         if (unpaidOrders.size >= 2) {
             val oldest = unpaidOrders.first()
             val newest = unpaidOrders.last()
             val breakdownStr = " (Old: $currency${formatCurrency(oldest.balanceDue, "")}, Recent: $currency${formatCurrency(newest.balanceDue, "")})"
-            return "Hello $customerName, friendly reminder from ${settings.businessName}. Your outstanding balance for egg/poultry purchases is $currency${formatCurrency(balance, "")}$breakdownStr.$momo$tel Thank you!"
+            return "Hello $customerName, friendly reminder from ${settings.businessName}. Your outstanding balance is $currency${formatCurrency(balance, "")}$breakdownStr.$momo$tel Thank you!"
         }
 
-        return "Hello $customerName, friendly reminder from ${settings.businessName} regarding your outstanding balance of ${formatCurrency(balance, currency)}.$momo$tel Thank you for choosing our farm Products, we look forward to serving you again!"
+        return "Hello $customerName, friendly reminder from ${settings.businessName} regarding your outstanding balance of ${formatCurrency(balance, currency)}.$momo$tel Thank you for your business, we look forward to serving you again!"
     }
 
     /**

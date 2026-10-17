@@ -45,6 +45,10 @@ import com.example.data.model.RestoreResult
 import com.example.data.remote.CloudSyncResult
 import com.example.data.remote.SmsBalanceResult
 import com.example.data.remote.SmsSendResult
+import com.example.ui.components.AppButton
+import com.example.ui.components.ScreenHeader
+import com.example.ui.components.SegmentedControl
+import com.example.ui.theme.AppTheme
 import com.example.ui.theme.BrandGreenPrimary
 import com.example.ui.theme.DebtRed
 import com.example.ui.theme.FarmGreen
@@ -53,9 +57,9 @@ import com.example.util.Formatters
 import java.io.File
 
 enum class SettingsTab(val title: String, val icon: ImageVector, val subtitle: String) {
-    PROFILE("Profile", Icons.Default.Storefront, "Business details & MoMo"),
-    BACKUP("Backup & Sync", Icons.Default.CloudSync, "Cloud sync & Phone backups"),
-    SMS("SMS Gateway", Icons.Default.Sms, "SMSOnlineGH & Auto-alerts")
+    PROFILE("Business", Icons.Default.Storefront, "Business details and payment info"),
+    BACKUP("Backup", Icons.Default.CloudSync, "Cloud sync and phone backups"),
+    SMS("SMS", Icons.Default.Sms, "SMS gateway and automatic alerts")
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -184,58 +188,36 @@ fun SettingsScreen(
     }
 
     Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         bottomBar = {
-            // High-visibility persistent Save Bar adhering to Fitts's Law & Peak-End Rule
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                tonalElevation = 8.dp,
-                shadowElevation = 8.dp,
-                color = MaterialTheme.colorScheme.surface
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 12.dp)
-                        .navigationBarsPadding(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+            // Save bar only appears when there is something to save.
+            AnimatedVisibility(visible = hasUnsavedChanges, enter = fadeIn(), exit = fadeOut()) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shadowElevation = 16.dp,
+                    shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+                    color = MaterialTheme.colorScheme.surface
                 ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = if (hasUnsavedChanges) "Unsaved changes" else "All settings synced",
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = if (hasUnsavedChanges) Color(0xFFD97706) else FarmGreen
-                        )
-                        Text(
-                            text = if (hasUnsavedChanges) "Tap save to apply your updates" else "Last saved to device storage",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.width(12.dp))
-
-                    Button(
-                        onClick = {
-                            onSaveSettings(currentSettingsSnapshot)
-                            Toast.makeText(context, "Settings saved successfully", Toast.LENGTH_SHORT).show()
-                        },
+                    Row(
                         modifier = Modifier
-                            .height(48.dp)
-                            .testTag("save_settings_button"),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = if (hasUnsavedChanges) BrandGreenPrimary else MaterialTheme.colorScheme.primaryContainer,
-                            contentColor = if (hasUnsavedChanges) Color.White else MaterialTheme.colorScheme.onPrimaryContainer
-                        )
+                            .fillMaxWidth()
+                            .padding(horizontal = 20.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "Save Settings",
-                            fontWeight = FontWeight.Bold,
-                            style = MaterialTheme.typography.labelLarge
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Unsaved changes", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface)
+                            Text("Save to apply them", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        AppButton(
+                            text = "Save",
+                            icon = Icons.Default.Check,
+                            onClick = {
+                                onSaveSettings(currentSettingsSnapshot)
+                                Toast.makeText(context, "Settings saved", Toast.LENGTH_SHORT).show()
+                            },
+                            modifier = Modifier.testTag("save_settings_button")
                         )
                     }
                 }
@@ -248,78 +230,15 @@ fun SettingsScreen(
                 .padding(innerPadding)
                 .background(MaterialTheme.colorScheme.background)
         ) {
-            // Header
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                color = MaterialTheme.colorScheme.surface,
-                tonalElevation = 1.dp
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 16.dp, start = 16.dp, end = 16.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text(
-                                text = "Settings & Integrations",
-                                style = MaterialTheme.typography.headlineSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                            Text(
-                                text = selectedTab.subtitle,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    // 3 Clean Navigation Tabs (Hick's & Miller's Law: 3 distinct options)
-                    TabRow(
-                        selectedTabIndex = selectedTab.ordinal,
-                        containerColor = Color.Transparent,
-                        contentColor = BrandGreenPrimary,
-                        indicator = { tabPositions ->
-                            TabRowDefaults.SecondaryIndicator(
-                                Modifier.tabIndicatorOffset(tabPositions[selectedTab.ordinal]),
-                                color = BrandGreenPrimary,
-                                height = 3.dp
-                            )
-                        },
-                        divider = {}
-                    ) {
-                        SettingsTab.values().forEach { tab ->
-                            Tab(
-                                selected = selectedTab == tab,
-                                onClick = { selectedTab = tab },
-                                text = {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(
-                                            imageVector = tab.icon,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(16.dp),
-                                            tint = if (selectedTab == tab) BrandGreenPrimary else MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text(
-                                            text = tab.title,
-                                            fontWeight = if (selectedTab == tab) FontWeight.Bold else FontWeight.Medium,
-                                            style = MaterialTheme.typography.labelLarge
-                                        )
-                                    }
-                                },
-                                modifier = Modifier.height(48.dp)
-                            )
-                        }
-                    }
-                }
+            Column(modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 12.dp)) {
+                ScreenHeader(title = "Settings", subtitle = selectedTab.subtitle)
+                Spacer(modifier = Modifier.height(12.dp))
+                SegmentedControl(
+                    options = SettingsTab.entries,
+                    selected = selectedTab,
+                    onSelect = { selectedTab = it },
+                    label = { it.title }
+                )
             }
 
             // Tab Content with Smooth Scrolling
@@ -482,7 +401,7 @@ fun SettingsScreen(
             },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Your farm database has been safely exported to your phone's storage:")
+                    Text("Your business data has been exported to your phone's storage:")
                     Surface(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(8.dp),
@@ -507,7 +426,7 @@ fun SettingsScreen(
                 Button(
                     onClick = {
                         val shareIntent = DatabaseBackupHelper.createShareIntent(context, file)
-                        context.startActivity(Intent.createChooser(shareIntent, "Share Farm Database Backup"))
+                        context.startActivity(Intent.createChooser(shareIntent, "Share Database Backup"))
                         recentBackupSuccessData = null
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = BrandGreenPrimary)
@@ -523,7 +442,7 @@ fun SettingsScreen(
                         onClick = {
                             pendingBackupDataForSave = data
                             val dateStr = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US).format(java.util.Date())
-                            createDocumentLauncher.launch("naadriel_farm_backup_$dateStr.json")
+                            createDocumentLauncher.launch("biztrack_backup_$dateStr.json")
                             recentBackupSuccessData = null
                         }
                     ) {
@@ -626,23 +545,23 @@ fun SettingsScreen(
         AlertDialog(
             onDismissRequest = { showConfirmCloudRestoreDialog = false },
             icon = {
-                Icon(Icons.Default.CloudDownload, contentDescription = null, tint = Color(0xFF2563EB), modifier = Modifier.size(36.dp))
+                Icon(Icons.Default.CloudDownload, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(36.dp))
             },
             title = {
                 Text("Pull & Restore from Cloud MySQL?", fontWeight = FontWeight.Bold)
             },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("This will fetch all products, customers, debt balances, and sales records from your Namecheap MySQL server and merge them into this phone's database.")
+                    Text("This will fetch all products, customers, debt balances, and sales records from your MySQL server and merge them into this phone's database.")
                     Surface(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(8.dp),
-                        color = Color(0xFFEFF6FF)
+                        color = MaterialTheme.colorScheme.primaryContainer
                     ) {
                         Text(
                             text = "Target: ${cloudSyncUrl.ifBlank { "Not set" }}",
                             style = MaterialTheme.typography.labelSmall,
-                            color = Color(0xFF1E40AF),
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
                             modifier = Modifier.padding(8.dp)
                         )
                     }
@@ -656,7 +575,7 @@ fun SettingsScreen(
                             Toast.makeText(context, result.message, Toast.LENGTH_LONG).show()
                         }
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB))
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
                 ) {
                     Text("Start Cloud Restore")
                 }
@@ -674,10 +593,10 @@ fun SettingsScreen(
         AlertDialog(
             onDismissRequest = { showSetupGuideDialog = false },
             icon = {
-                Icon(Icons.Default.CloudUpload, contentDescription = null, tint = Color(0xFF2563EB), modifier = Modifier.size(36.dp))
+                Icon(Icons.Default.CloudUpload, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(36.dp))
             },
             title = {
-                Text("Namecheap cPanel Setup Guide", fontWeight = FontWeight.Bold)
+                Text("Cloud sync setup guide", fontWeight = FontWeight.Bold)
             },
             text = {
                 Column(
@@ -685,7 +604,7 @@ fun SettingsScreen(
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Text(
-                        "Follow these 3 quick steps on your Namecheap cPanel account:",
+                        "Follow these 3 quick steps on your cPanel hosting account:",
                         style = MaterialTheme.typography.bodySmall,
                         fontWeight = FontWeight.SemiBold
                     )
@@ -767,7 +686,7 @@ private fun ProfileTabContent(
                 Spacer(modifier = Modifier.width(10.dp))
                 Column {
                     Text(
-                        text = "Farm & Business Identity",
+                        text = "Business identity",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold
                     )
@@ -796,7 +715,7 @@ private fun ProfileTabContent(
                 value = businessTagline,
                 onValueChange = onBusinessTaglineChange,
                 label = { Text("Tagline / Slogan") },
-                placeholder = { Text("e.g. Chicken at its best") },
+                placeholder = { Text("e.g. Quality you can trust") },
                 singleLine = true,
                 leadingIcon = { Icon(Icons.Default.FormatQuote, contentDescription = null) },
                 modifier = Modifier.fillMaxWidth(),
@@ -905,15 +824,15 @@ private fun BackupTabContent(
                         modifier = Modifier
                             .size(36.dp)
                             .clip(CircleShape)
-                            .background(Color(0xFF3B82F6).copy(alpha = 0.12f)),
+                            .background(MaterialTheme.colorScheme.primaryContainer),
                         contentAlignment = Alignment.Center
                     ) {
-                        Icon(Icons.Default.CloudSync, contentDescription = null, tint = Color(0xFF2563EB), modifier = Modifier.size(20.dp))
+                        Icon(Icons.Default.CloudSync, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
                     }
                     Spacer(modifier = Modifier.width(10.dp))
                     Column {
                         Text(
-                            text = "Namecheap MySQL Cloud",
+                            text = "MySQL cloud sync",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
                         )
@@ -950,7 +869,7 @@ private fun BackupTabContent(
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(10.dp),
-                    color = if (settings.cloudSyncUrl.isNotBlank()) Color(0xFFEFF6FF) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                    color = if (settings.cloudSyncUrl.isNotBlank()) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
                 ) {
                     Row(
                         modifier = Modifier.padding(12.dp),
@@ -959,7 +878,7 @@ private fun BackupTabContent(
                         Icon(
                             Icons.Default.CloudDone,
                             contentDescription = null,
-                            tint = if (settings.cloudSyncUrl.isNotBlank()) Color(0xFF2563EB) else MaterialTheme.colorScheme.onSurfaceVariant,
+                            tint = if (settings.cloudSyncUrl.isNotBlank()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(20.dp)
                         )
                         Spacer(modifier = Modifier.width(10.dp))
@@ -986,9 +905,9 @@ private fun BackupTabContent(
                 OutlinedTextField(
                     value = cloudSyncUrl,
                     onValueChange = onCloudSyncUrlChange,
-                    label = { Text("Namecheap API Endpoint URL") },
+                    label = { Text("Sync endpoint URL") },
                     placeholder = { Text("https://yourdomain.com/api/sync.php") },
-                    leadingIcon = { Icon(Icons.Default.Language, contentDescription = null, tint = Color(0xFF2563EB)) },
+                    leadingIcon = { Icon(Icons.Default.Language, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
                     singleLine = true,
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1001,7 +920,7 @@ private fun BackupTabContent(
                     onValueChange = onCloudSyncSecretKeyChange,
                     label = { Text("Secret API Key (X-Api-Key)") },
                     placeholder = { Text("Matches \$API_SECRET_KEY in sync.php") },
-                    leadingIcon = { Icon(Icons.Default.VpnKey, contentDescription = null, tint = Color(0xFF2563EB)) },
+                    leadingIcon = { Icon(Icons.Default.VpnKey, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
                     trailingIcon = {
                         IconButton(onClick = onToggleShowSecretKey) {
                             Icon(
@@ -1023,7 +942,7 @@ private fun BackupTabContent(
                     Surface(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(10.dp),
-                        color = if (success) Color(0xFFDCFCE7) else Color(0xFFFEE2E2)
+                        color = if (success) AppTheme.status.successContainer else AppTheme.status.dangerContainer
                     ) {
                         Row(
                             modifier = Modifier.padding(10.dp),
@@ -1071,13 +990,13 @@ private fun BackupTabContent(
                         onClick = onSyncToCloud,
                         enabled = !isCloudSyncing && cloudSyncUrl.isNotBlank(),
                         shape = RoundedCornerShape(10.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB)),
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
                         modifier = Modifier.weight(1.3f)
                     ) {
                         if (isCloudSyncing) {
-                            CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                            CircularProgressIndicator(modifier = Modifier.size(16.dp), color = MaterialTheme.colorScheme.onPrimary, strokeWidth = 2.dp)
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Syncing...", color = Color.White, style = MaterialTheme.typography.labelSmall)
+                            Text("Syncing...", color = MaterialTheme.colorScheme.onPrimary, style = MaterialTheme.typography.labelSmall)
                         } else {
                             Icon(Icons.Default.CloudUpload, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
@@ -1092,9 +1011,9 @@ private fun BackupTabContent(
                     shape = RoundedCornerShape(10.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Icon(Icons.Default.CloudDownload, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color(0xFF2563EB))
+                    Icon(Icons.Default.CloudDownload, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("Restore Database from Cloud MySQL", color = Color(0xFF2563EB))
+                    Text("Restore Database from Cloud MySQL", color = MaterialTheme.colorScheme.primary)
                 }
             }
         }
@@ -1147,7 +1066,7 @@ private fun BackupTabContent(
 
                 Surface(
                     shape = RoundedCornerShape(20.dp),
-                    color = Color(0xFFDCFCE7)
+                    color = AppTheme.status.successContainer
                 ) {
                     Text(
                         text = "Auto Active",
@@ -1164,8 +1083,8 @@ private fun BackupTabContent(
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(10.dp),
-                    color = Color(0xFFF0FDF4),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFBBF7D0))
+                    color = AppTheme.status.successContainer,
+                    border = androidx.compose.foundation.BorderStroke(1.dp, AppTheme.status.success.copy(alpha = 0.3f))
                 ) {
                     Row(
                         modifier = Modifier
@@ -1207,7 +1126,7 @@ private fun BackupTabContent(
                         colors = ButtonDefaults.buttonColors(containerColor = BrandGreenPrimary)
                     ) {
                         if (isBackingUp) {
-                            CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                            CircularProgressIndicator(modifier = Modifier.size(16.dp), color = MaterialTheme.colorScheme.onPrimary, strokeWidth = 2.dp)
                             Spacer(modifier = Modifier.width(6.dp))
                             Text("Saving...", style = MaterialTheme.typography.labelMedium)
                         } else {
@@ -1284,7 +1203,7 @@ private fun BackupTabContent(
                                                 val file = File(backupInfo.filePath)
                                                 if (file.exists()) {
                                                     val shareIntent = DatabaseBackupHelper.createShareIntent(context, file)
-                                                    context.startActivity(Intent.createChooser(shareIntent, "Share Farm Database Backup"))
+                                                    context.startActivity(Intent.createChooser(shareIntent, "Share Database Backup"))
                                                 }
                                             },
                                             modifier = Modifier.size(28.dp)
@@ -1396,7 +1315,7 @@ private fun SmsTabContent(
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(10.dp),
-                color = if (isConfigured) Color(0xFFDCFCE7) else Color(0xFFFEF3C7)
+                color = if (isConfigured) AppTheme.status.successContainer else AppTheme.status.warningContainer
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
@@ -1405,7 +1324,7 @@ private fun SmsTabContent(
                     Icon(
                         imageVector = if (isConfigured) Icons.Default.CheckCircle else Icons.Default.Info,
                         contentDescription = null,
-                        tint = if (isConfigured) FarmGreen else Color(0xFFB45309),
+                        tint = if (isConfigured) FarmGreen else AppTheme.status.warning,
                         modifier = Modifier.size(16.dp)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
@@ -1413,7 +1332,7 @@ private fun SmsTabContent(
                         text = if (isConfigured) "Service Connected • Ready for alerts" else "API Key Required for automatic SMS delivery",
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.SemiBold,
-                        color = if (isConfigured) FarmGreen else Color(0xFF92400E)
+                        color = if (isConfigured) FarmGreen else AppTheme.status.onWarningContainer
                     )
                 }
             }
@@ -1571,7 +1490,7 @@ private fun SmsTabContent(
                     colors = ButtonDefaults.buttonColors(containerColor = BrandGreenPrimary)
                 ) {
                     if (isTestingSms) {
-                        CircularProgressIndicator(modifier = Modifier.size(18.dp), color = Color.White, strokeWidth = 2.dp)
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), color = MaterialTheme.colorScheme.onPrimary, strokeWidth = 2.dp)
                     } else {
                         Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(4.dp))
@@ -1584,7 +1503,7 @@ private fun SmsTabContent(
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(10.dp),
-                    color = if (success) Color(0xFFDCFCE7) else Color(0xFFFEE2E2)
+                    color = if (success) AppTheme.status.successContainer else AppTheme.status.dangerContainer
                 ) {
                     Row(
                         modifier = Modifier.padding(10.dp),

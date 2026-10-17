@@ -346,7 +346,7 @@ private fun CustomerFinancialSummaryHeader(
                         Icon(
                             imageVector = if (isDebtFree) Icons.Default.CheckCircle else Icons.Default.Warning,
                             contentDescription = null,
-                            tint = Color.White,
+                            tint = if (isDebtFree) AppTheme.status.onSuccess else AppTheme.status.onDanger,
                             modifier = Modifier.size(14.dp)
                         )
                         Spacer(modifier = Modifier.width(4.dp))
@@ -354,7 +354,7 @@ private fun CustomerFinancialSummaryHeader(
                             text = if (isDebtFree) "CLEARED" else "OWES DEBT",
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.Bold,
-                            color = Color.White
+                            color = if (isDebtFree) AppTheme.status.onSuccess else AppTheme.status.onDanger
                         )
                     }
                 }

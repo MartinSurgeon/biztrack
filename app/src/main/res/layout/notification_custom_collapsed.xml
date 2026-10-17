@@ -17,8 +17,8 @@
             android:id="@+id/notif_icon"
             android:layout_width="20dp"
             android:layout_height="20dp"
-            android:src="@drawable/ic_naadriel_logo"
-            android:contentDescription="Naadriel Farm" />
+            android:src="@drawable/ic_app_logo"
+            android:contentDescription="Business logo" />
 
         <TextView
             android:id="@+id/notif_header_tag"
@@ -26,7 +26,7 @@
             android:layout_height="wrap_content"
             android:layout_marginStart="8dp"
             android:layout_weight="1"
-            android:text="NAADRIEL ENTERPRISE • SALES"
+            android:text="BIZTRACK • SALES"
             android:textColor="#1B5E20"
             android:textSize="11sp"
             android:textStyle="bold" />
@@ -68,7 +68,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="2dp"
-                android:text="Kofi Mensah • 10 Crates Large Eggs"
+                android:text="Customer • 3 items"
                 android:textColor="#4A554A"
                 android:textSize="12sp" />
         </LinearLayout>

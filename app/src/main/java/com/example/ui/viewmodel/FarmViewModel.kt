@@ -271,7 +271,8 @@ class FarmViewModel(application: Application) : AndroidViewModel(application) {
                     totalAmountFormatted = Formatters.formatCurrency(order.totalAmount, currentSettings.currencySymbol),
                     amountPaidFormatted = Formatters.formatCurrency(order.amountPaid, currentSettings.currencySymbol),
                     balanceDue = order.balanceDue,
-                    currencySymbol = currentSettings.currencySymbol
+                    currencySymbol = currentSettings.currencySymbol,
+                    businessName = currentSettings.businessName
                 )
 
                 // Update Home Screen Widget
@@ -364,7 +365,8 @@ class FarmViewModel(application: Application) : AndroidViewModel(application) {
                     customerName = customer.name,
                     amountPaidFormatted = Formatters.formatCurrency(amount, currentSettings.currencySymbol),
                     remainingBalance = newBal,
-                    currencySymbol = currentSettings.currencySymbol
+                    currencySymbol = currentSettings.currencySymbol,
+                    businessName = currentSettings.businessName
                 )
 
                 // Update Home Screen Widget
@@ -468,7 +470,8 @@ class FarmViewModel(application: Application) : AndroidViewModel(application) {
                     customerName = order.customerName,
                     amountPaidFormatted = Formatters.formatCurrency(amount, currentSettings.currencySymbol),
                     remainingBalance = remainingBal,
-                    currencySymbol = currentSettings.currencySymbol
+                    currencySymbol = currentSettings.currencySymbol,
+                    businessName = currentSettings.businessName
                 )
 
                 // Update Home Screen Widget

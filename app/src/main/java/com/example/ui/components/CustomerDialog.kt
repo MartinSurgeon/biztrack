@@ -222,7 +222,7 @@ fun CustomerFormDialog(
                         value = notes,
                         onValueChange = { notes = it },
                         label = { Text("Notes / Location (Optional)") },
-                        placeholder = { Text("e.g. Buys 5 crates weekly / Madina Market") },
+                        placeholder = { Text("e.g. Weekly buyer, prefers delivery") },
                         leadingIcon = {
                             Icon(Icons.Default.Notes, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
                         },

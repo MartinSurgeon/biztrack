@@ -17,8 +17,8 @@
             android:id="@+id/notif_exp_icon"
             android:layout_width="24dp"
             android:layout_height="24dp"
-            android:src="@drawable/ic_naadriel_logo"
-            android:contentDescription="Naadriel Farm Logo" />
+            android:src="@drawable/ic_app_logo"
+            android:contentDescription="Business logo" />
 
         <LinearLayout
             android:layout_width="0dp"
@@ -31,7 +31,7 @@
                 android:id="@+id/notif_exp_business_name"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="NAADRIEL ENTERPRISE"
+                android:text="BizTrack"
                 android:textColor="#1B5E20"
                 android:textSize="12sp"
                 android:textStyle="bold" />

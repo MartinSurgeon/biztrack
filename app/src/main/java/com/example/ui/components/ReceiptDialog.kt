@@ -39,6 +39,7 @@ import com.example.ui.theme.BrandAmberGoldContainer
 import com.example.ui.theme.WarningAmber
 import com.example.ui.theme.WarningAmberContainer
 import com.example.ui.theme.WhatsAppGreen
+import com.example.ui.theme.WhatsAppSolid
 import com.example.util.DigitalReceiptGenerator
 import com.example.util.Formatters
 
@@ -394,7 +395,7 @@ fun ReceiptDialog(
 
                             Spacer(modifier = Modifier.height(8.dp))
                             Text(
-                                text = "Thank you for choosing our farm Products, we look forward to serving you again!",
+                                text = "Thank you for your business, we look forward to serving you again!",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 textAlign = TextAlign.Center,
@@ -484,7 +485,7 @@ fun ReceiptDialog(
                                     else -> "share_whatsapp_receipt_button"
                                 }
                             ),
-                        colors = ButtonDefaults.buttonColors(containerColor = WhatsAppGreen),
+                        colors = ButtonDefaults.buttonColors(containerColor = WhatsAppSolid, contentColor = Color.White),
                         shape = RoundedCornerShape(12.dp)
                     ) {
                         Icon(

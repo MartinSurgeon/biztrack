@@ -292,7 +292,7 @@ object DigitalReceiptGenerator {
         paint.textAlign = Paint.Align.CENTER
         paint.textSize = 14f
         paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)
-        canvas.drawText("Thank you for choosing our farm Products, we look forward to serving you again!", width / 2f, currentY, paint)
+        canvas.drawText("Thank you for your business, we look forward to serving you again!", width / 2f, currentY, paint)
 
         // Save Bitmap to Cache Directory
         return saveBitmapToCache(context, bitmap, "receipt_${order.invoiceNumber}.png")
@@ -538,7 +538,7 @@ object DigitalReceiptGenerator {
         paint.textAlign = Paint.Align.CENTER
         paint.textSize = 10.5f
         paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)
-        canvas.drawText("Thank you for choosing our farm Products, we look forward to serving you again!", pageWidth / 2f, currentY + 15f, paint)
+        canvas.drawText("Thank you for your business, we look forward to serving you again!", pageWidth / 2f, currentY + 15f, paint)
 
         document.finishPage(page)
 
@@ -708,7 +708,7 @@ object DigitalReceiptGenerator {
         paint.textAlign = Paint.Align.CENTER
         paint.textSize = 16f
         paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)
-        canvas.drawText("Thank you for choosing our farm Products, we look forward to serving you again!", width / 2f, currentY + 15f, paint)
+        canvas.drawText("Thank you for your business, we look forward to serving you again!", width / 2f, currentY + 15f, paint)
 
         return saveBitmapToCache(context, bitmap, "statement_${customer.name.replace(" ", "_")}.png")
     }

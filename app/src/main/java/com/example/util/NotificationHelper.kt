@@ -45,7 +45,7 @@ object NotificationHelper {
                 "Sales & Invoices",
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
-                description = "Instant alerts when new egg and poultry sales are recorded"
+                description = "Instant alerts when new sales are recorded"
                 enableLights(true)
                 lightColor = BRAND_COLOR
                 enableVibration(true)
@@ -75,10 +75,10 @@ object NotificationHelper {
                 enableLights(false)
             }
 
-            // 4. Farm & Inventory Alerts (Default priority)
+            // 4. Inventory Alerts (Default priority)
             val alertsChannel = NotificationChannel(
                 CHANNEL_ALERTS,
-                "Farm Alerts & Reminders",
+                "Business alerts & reminders",
                 NotificationManager.IMPORTANCE_DEFAULT
             ).apply {
                 description = "Customer overdue debt reminders and inventory notifications"
@@ -100,7 +100,8 @@ object NotificationHelper {
         totalAmountFormatted: String,
         amountPaidFormatted: String,
         balanceDue: Double,
-        currencySymbol: String
+        currencySymbol: String,
+        businessName: String = "BizTrack"
     ) {
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -148,7 +149,7 @@ object NotificationHelper {
 
         // 1. Build Beautiful Collapsed RemoteView
         val collapsedView = RemoteViews(context.packageName, R.layout.notification_custom_collapsed).apply {
-            setTextViewText(R.id.notif_header_tag, "NAADRIEL FARM • SALE ORDER")
+            setTextViewText(R.id.notif_header_tag, "${businessName.uppercase()} • SALE")
             setTextViewText(R.id.notif_time, timeStr)
             setTextViewText(R.id.notif_title, "Sale Order #$invoiceNumber")
             setTextViewText(R.id.notif_subtitle, "$customerName • $paymentSummary")
@@ -157,8 +158,8 @@ object NotificationHelper {
 
         // 2. Build Beautiful Expanded RemoteView
         val expandedView = RemoteViews(context.packageName, R.layout.notification_custom_expanded).apply {
-            setTextViewText(R.id.notif_exp_business_name, "NAADRIEL ENTERPRISE")
-            setTextViewText(R.id.notif_exp_category_tag, "Egg & Poultry Sales Receipt")
+            setTextViewText(R.id.notif_exp_business_name, businessName)
+            setTextViewText(R.id.notif_exp_category_tag, "Sales receipt")
             setTextViewText(R.id.notif_exp_title, "Order #$invoiceNumber")
             setTextViewText(R.id.notif_exp_customer, "Customer: $customerName")
             setTextViewText(R.id.notif_exp_total_amount, totalAmountFormatted)
@@ -174,7 +175,7 @@ object NotificationHelper {
         }
 
         val notification = NotificationCompat.Builder(context, CHANNEL_SALES)
-            .setSmallIcon(R.drawable.ic_naadriel_logo)
+            .setSmallIcon(R.drawable.ic_stat_app)
             .setColor(BRAND_COLOR)
             .setContentTitle("Sale Recorded: #$invoiceNumber")
             .setContentText("$customerName • $totalAmountFormatted")
@@ -183,8 +184,8 @@ object NotificationHelper {
             .setStyle(NotificationCompat.DecoratedCustomViewStyle())
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setContentIntent(pendingIntent)
-            .addAction(R.drawable.ic_naadriel_logo, "+ New Sale", newSalePendingIntent)
-            .addAction(R.drawable.ic_naadriel_logo, "👥 Debtors", debtorsPendingIntent)
+            .addAction(R.drawable.ic_stat_app, "+ New Sale", newSalePendingIntent)
+            .addAction(R.drawable.ic_stat_app, "👥 Customers", debtorsPendingIntent)
             .setAutoCancel(true)
             .build()
 
@@ -203,7 +204,8 @@ object NotificationHelper {
         customerName: String,
         amountPaidFormatted: String,
         remainingBalance: Double,
-        currencySymbol: String
+        currencySymbol: String,
+        businessName: String = "BizTrack"
     ) {
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -227,7 +229,7 @@ object NotificationHelper {
 
         // 1. Build Beautiful Collapsed RemoteView
         val collapsedView = RemoteViews(context.packageName, R.layout.notification_custom_collapsed).apply {
-            setTextViewText(R.id.notif_header_tag, "NAADRIEL FARM • DEBT PAYMENT")
+            setTextViewText(R.id.notif_header_tag, "${businessName.uppercase()} • PAYMENT")
             setTextViewText(R.id.notif_time, timeStr)
             setTextViewText(R.id.notif_title, "Payment from $customerName")
             setTextViewText(R.id.notif_subtitle, balanceSummary)
@@ -236,7 +238,7 @@ object NotificationHelper {
 
         // 2. Build Beautiful Expanded RemoteView
         val expandedView = RemoteViews(context.packageName, R.layout.notification_custom_expanded).apply {
-            setTextViewText(R.id.notif_exp_business_name, "NAADRIEL ENTERPRISE")
+            setTextViewText(R.id.notif_exp_business_name, businessName)
             setTextViewText(R.id.notif_exp_category_tag, "Customer Debt Ledger Update")
             setTextViewText(R.id.notif_exp_title, "Payment Received from $customerName")
             setTextViewText(R.id.notif_exp_customer, "Account: $customerName")
@@ -253,7 +255,7 @@ object NotificationHelper {
         }
 
         val notification = NotificationCompat.Builder(context, CHANNEL_PAYMENTS)
-            .setSmallIcon(R.drawable.ic_naadriel_logo)
+            .setSmallIcon(R.drawable.ic_stat_app)
             .setColor(BRAND_COLOR)
             .setContentTitle("Payment Received: $amountPaidFormatted")
             .setContentText("From $customerName • $balanceSummary")
@@ -306,7 +308,7 @@ object NotificationHelper {
         }
 
         val notification = NotificationCompat.Builder(context, CHANNEL_SMS)
-            .setSmallIcon(R.drawable.ic_naadriel_logo)
+            .setSmallIcon(R.drawable.ic_stat_app)
             .setColor(if (isSuccess) BRAND_COLOR else DEBT_RED_COLOR)
             .setContentTitle(title)
             .setContentText(message)

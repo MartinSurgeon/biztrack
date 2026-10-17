@@ -2,17 +2,19 @@ package com.example.ui.components
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.MaterialTheme
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.Dp
@@ -20,29 +22,35 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.example.R
 import com.example.data.model.ProductCategory
-import com.example.data.model.ProductEntity
 
-fun getProductDefaultDrawableRes(category: String, name: String): Int {
-    val lowerName = name.lowercase()
-    val upperCat = category.uppercase()
+/** Illustrations kept for products created by the original poultry version. */
+fun getLegacyProductDrawableRes(category: String): Int? = when (ProductCategory.fromKey(category)) {
+    ProductCategory.BROILER_DRESSED, ProductCategory.SASSO_DRESSED -> R.drawable.ic_dressed_chicken
+    ProductCategory.BROILER_LIVE -> R.drawable.ic_live_broiler
+    ProductCategory.SASSO_LIVE -> R.drawable.ic_sasso_chicken
+    ProductCategory.EGGS -> R.drawable.ic_fresh_eggs
+    else -> null
+}
 
-    return when {
-        upperCat == ProductCategory.BROILER_DRESSED.name || lowerName.contains("dressed") -> {
-            R.drawable.ic_dressed_chicken
-        }
-        upperCat == ProductCategory.BROILER_LIVE.name || (lowerName.contains("broiler") && lowerName.contains("live")) -> {
-            R.drawable.ic_live_broiler
-        }
-        upperCat.contains("SASSO") || lowerName.contains("sasso") -> {
-            R.drawable.ic_sasso_chicken
-        }
-        upperCat == ProductCategory.EGGS.name || lowerName.contains("egg") -> {
-            R.drawable.ic_fresh_eggs
-        }
-        else -> {
-            R.drawable.ic_farm_product
-        }
-    }
+fun categoryIcon(category: String): ImageVector = when (ProductCategory.fromKey(category)) {
+    ProductCategory.FOOD_DRINKS -> Icons.Default.Restaurant
+    ProductCategory.GROCERIES -> Icons.Default.LocalGroceryStore
+    ProductCategory.FASHION -> Icons.Default.Checkroom
+    ProductCategory.ELECTRONICS -> Icons.Default.Devices
+    ProductCategory.HEALTH_BEAUTY -> Icons.Default.Spa
+    ProductCategory.HOME_HARDWARE -> Icons.Default.Handyman
+    ProductCategory.AGRICULTURE, ProductCategory.EGGS, ProductCategory.BROILER_LIVE,
+    ProductCategory.BROILER_DRESSED, ProductCategory.SASSO_LIVE, ProductCategory.SASSO_DRESSED -> Icons.Default.Agriculture
+    ProductCategory.SERVICES -> Icons.Default.HomeRepairService
+    else -> Icons.Default.Inventory2
+}
+
+fun categoryTone(category: String): Tone = when (ProductCategory.fromKey(category)) {
+    ProductCategory.FOOD_DRINKS, ProductCategory.GROCERIES -> Tone.WARNING
+    ProductCategory.FASHION, ProductCategory.HEALTH_BEAUTY -> Tone.DANGER
+    ProductCategory.ELECTRONICS, ProductCategory.SERVICES -> Tone.INFO
+    ProductCategory.AGRICULTURE -> Tone.SUCCESS
+    else -> Tone.PRIMARY
 }
 
 @Composable
@@ -55,33 +63,34 @@ fun ProductThumbnail(
     shapeRadius: Dp = 14.dp
 ) {
     val shape = RoundedCornerShape(shapeRadius)
-    val fallbackRes = getProductDefaultDrawableRes(category, name)
+    val legacyRes = getLegacyProductDrawableRes(category)
+    val tone = toneColors(categoryTone(category))
 
     Box(
         modifier = modifier
             .size(size)
             .clip(shape)
-            .background(Color(0xFFF4F7F2))
-            .border(1.dp, Color(0xFFE5ECE2), shape),
+            .background(tone.container),
         contentAlignment = Alignment.Center
     ) {
-        if (imageUri.isNotBlank()) {
-            AsyncImage(
+        when {
+            imageUri.isNotBlank() -> AsyncImage(
                 model = imageUri,
                 contentDescription = name,
                 modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop,
-                error = painterResource(id = fallbackRes),
-                placeholder = painterResource(id = fallbackRes)
+                contentScale = ContentScale.Crop
             )
-        } else {
-            Image(
-                painter = painterResource(id = fallbackRes),
+            legacyRes != null -> Image(
+                painter = painterResource(id = legacyRes),
                 contentDescription = name,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .clip(shape),
+                modifier = Modifier.fillMaxSize().padding(size * 0.08f),
                 contentScale = ContentScale.Fit
+            )
+            else -> Icon(
+                imageVector = categoryIcon(category),
+                contentDescription = name,
+                tint = tone.content,
+                modifier = Modifier.size(size * 0.45f)
             )
         }
     }

@@ -23,6 +23,7 @@ import com.example.data.model.AppSettingsEntity
 import com.example.data.model.CustomerEntity
 import com.example.data.model.PaymentMethod
 import com.example.data.model.SaleOrderEntity
+import com.example.ui.theme.AppTheme
 import com.example.ui.theme.BrandGreenPrimary
 import com.example.ui.theme.DebtRed
 import com.example.ui.theme.DebtRedContainer
@@ -212,7 +213,7 @@ fun RecordPaymentDialog(
                                 amountText = if (bal % 1.0 == 0.0) bal.toInt().toString() else String.format("%.2f", bal)
                             },
                             label = { Text("Full Debt", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold) },
-                            colors = FilterChipDefaults.filterChipColors(selectedContainerColor = FarmGreen, selectedLabelColor = Color.White)
+                            colors = FilterChipDefaults.filterChipColors(selectedContainerColor = FarmGreen, selectedLabelColor = AppTheme.status.onSuccess)
                         )
 
                         // 50% Half
@@ -311,7 +312,7 @@ fun RecordPaymentDialog(
                                 modifier = Modifier.weight(1f),
                                 colors = FilterChipDefaults.filterChipColors(
                                     selectedContainerColor = BrandGreenPrimary,
-                                    selectedLabelColor = Color.White
+                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimary
                                 )
                             )
                         }

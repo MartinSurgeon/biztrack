@@ -23,7 +23,7 @@ class GreetingScreenshotTest {
   fun greeting_screenshot() {
     composeTestRule.setContent {
       MyApplicationTheme {
-        androidx.compose.material3.Text("Naadriel Enterprise - Chicken at its best")
+        androidx.compose.material3.Text("BizTrack - Sales, stock & customers")
       }
     }
 

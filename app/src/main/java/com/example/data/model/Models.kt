@@ -4,14 +4,42 @@ import androidx.room.Entity
 import androidx.room.PrimaryKey
 import com.squareup.moshi.JsonClass
 
-enum class ProductCategory(val displayName: String) {
-    EGGS("Eggs"),
-    BROILER_LIVE("Live Broiler Chicken"),
-    BROILER_DRESSED("Dressed Broiler Chicken"),
-    SASSO_LIVE("Live Sasso Chicken"),
-    SASSO_DRESSED("Dressed Sasso Chicken"),
-    OTHER("Other Farm Products")
+/**
+ * Product categories, stored by [name] in ProductEntity.category.
+ * Entries marked [legacy] come from the original poultry-only version: they are
+ * kept so existing records still resolve, but are not offered for new products.
+ */
+enum class ProductCategory(val displayName: String, val legacy: Boolean = false) {
+    GENERAL("General"),
+    FOOD_DRINKS("Food & Drinks"),
+    GROCERIES("Groceries"),
+    FASHION("Fashion & Apparel"),
+    ELECTRONICS("Electronics"),
+    HEALTH_BEAUTY("Health & Beauty"),
+    HOME_HARDWARE("Home & Hardware"),
+    AGRICULTURE("Agriculture & Farm"),
+    SERVICES("Services"),
+    OTHER("Other"),
+
+    EGGS("Eggs", legacy = true),
+    BROILER_LIVE("Live Broiler Chicken", legacy = true),
+    BROILER_DRESSED("Dressed Broiler Chicken", legacy = true),
+    SASSO_LIVE("Live Sasso Chicken", legacy = true),
+    SASSO_DRESSED("Dressed Sasso Chicken", legacy = true);
+
+    companion object {
+        val selectable: List<ProductCategory> get() = entries.filterNot { it.legacy }
+
+        fun fromKey(key: String): ProductCategory? = entries.firstOrNull { it.name.equals(key, ignoreCase = true) }
+
+        /** Human label for a stored category key, including unknown/custom keys. */
+        fun labelFor(key: String): String = fromKey(key)?.displayName
+            ?: key.replace('_', ' ').lowercase().replaceFirstChar { it.uppercase() }.ifBlank { GENERAL.displayName }
+    }
 }
+
+/** Common units offered as quick picks in the product form. */
+val CommonUnits = listOf("Piece", "Kg", "Box", "Pack", "Bottle", "Litre", "Dozen", "Bag", "Hour", "Service")
 
 @JsonClass(generateAdapter = true)
 @Entity(tableName = "products")
@@ -19,11 +47,11 @@ data class ProductEntity(
     @PrimaryKey(autoGenerate = true)
     val id: Long = 0,
     val name: String,
-    val category: String, // e.g. "EGGS", "BROILER_LIVE", "BROILER_DRESSED", "SASSO_LIVE", "SASSO_DRESSED", "OTHER"
-    val unit: String,     // "Crate", "Piece", "Bird", "Kg"
+    val category: String, // ProductCategory.name, e.g. "GENERAL", "FOOD_DRINKS", "SERVICES"
+    val unit: String,     // e.g. "Piece", "Kg", "Box", "Hour"
     val unitPrice: Double,
     val costPrice: Double = 0.0, // Production / procurement cost per unit
-    val stockQuantity: Double = 0.0, // Live inventory on hand (e.g. crates of eggs, number of birds)
+    val stockQuantity: Double = 0.0, // Inventory on hand
     val minStockThreshold: Double = 5.0, // Reorder / low stock alert threshold
     val inStock: Boolean = true,
     val description: String = "",
@@ -38,7 +66,7 @@ data class InventoryLogEntity(
     val id: Long = 0,
     val productId: Long,
     val productName: String,
-    val changeType: String, // "RESTOCK", "EGG_COLLECTION", "SALE", "MORTALITY", "DAMAGE", "ADJUSTMENT"
+    val changeType: String, // "RESTOCK", "SALE", "DAMAGE", "CORRECTION", "ADJUSTMENT" (+ legacy farm types)
     val quantityChanged: Double,
     val quantityAfter: Double,
     val unit: String,

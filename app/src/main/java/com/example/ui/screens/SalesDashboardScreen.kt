@@ -1,65 +1,60 @@
 package com.example.ui.screens
 
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.automirrored.filled.ReceiptLong
+import androidx.compose.material.icons.automirrored.filled.TrendingUp
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import com.example.R
 import com.example.data.model.AppSettingsEntity
 import com.example.data.model.CustomerEntity
+import com.example.data.model.ProductEntity
 import com.example.data.model.SaleOrderEntity
 import com.example.data.remote.SmsService
-import com.example.ui.components.ConfirmationDialog
-import com.example.ui.theme.*
-import com.example.ui.theme.WarningAmber
-import com.example.ui.theme.WarningAmberContainer
+import com.example.ui.components.*
+import com.example.ui.theme.AppTheme
 import com.example.util.DigitalReceiptGenerator
 import com.example.util.Formatters
 import java.util.Calendar
 
 enum class DateRangeFilter(val label: String) {
-    ALL("All Time"),
+    ALL("All"),
     TODAY("Today"),
-    THIS_WEEK("This Week"),
-    THIS_MONTH("This Month")
+    THIS_WEEK("Week"),
+    THIS_MONTH("Month")
 }
 
-enum class ProductTypeFilter(val label: String, val keywords: List<String>) {
-    ALL("All Products", emptyList()),
-    EGGS("Eggs 🥚", listOf("egg", "crate")),
-    DRESSED_CHICKEN("Dressed Chicken 🍗", listOf("dressed", "dressed broiler", "dressed sasso")),
-    LIVE_CHICKEN("Live Chicken 🐔", listOf("live", "live broiler", "live sasso")),
-    BROILER("Broiler 🐔", listOf("broiler")),
-    SASSO("Sasso 🐓", listOf("sasso"))
+enum class PaymentStatusFilter(val label: String) {
+    ALL("All"),
+    PAID("Paid"),
+    PARTIAL("Partial"),
+    UNPAID("Unpaid")
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+private fun startOfToday(): Long = Calendar.getInstance().apply {
+    set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
+}.timeInMillis
+
+private fun greeting(): String = when (Calendar.getInstance().get(Calendar.HOUR_OF_DAY)) {
+    in 0..11 -> "Good morning"
+    in 12..16 -> "Good afternoon"
+    else -> "Good evening"
+}
+
 @Composable
 fun SalesDashboardScreen(
     orders: List<SaleOrderEntity>,
@@ -74,637 +69,285 @@ fun SalesDashboardScreen(
     onSelectOrderReceipt: (SaleOrderEntity) -> Unit,
     onSendSms: (SaleOrderEntity) -> Unit,
     onEditOrder: ((SaleOrderEntity) -> Unit)? = null,
-    onVoidOrder: ((SaleOrderEntity) -> Unit)? = null
+    onVoidOrder: ((SaleOrderEntity) -> Unit)? = null,
+    products: List<ProductEntity> = emptyList()
 ) {
     val context = LocalContext.current
+    val currency = settings.currencySymbol
     var orderToVoid by remember { mutableStateOf<SaleOrderEntity?>(null) }
 
-    // Search and Filter States
     var searchQuery by remember { mutableStateOf("") }
     var selectedDateRange by remember { mutableStateOf(DateRangeFilter.ALL) }
-    var selectedProductType by remember { mutableStateOf(ProductTypeFilter.ALL) }
+    var selectedStatus by remember { mutableStateOf(PaymentStatusFilter.ALL) }
 
-    // Filter Logic
-    val filteredOrders = remember(orders, searchQuery, selectedDateRange, selectedProductType) {
-        val now = System.currentTimeMillis()
+    val todayStart = remember(orders) { startOfToday() }
+    val todayOrders = remember(orders, todayStart) { orders.filter { it.timestamp >= todayStart } }
+    val todaySales = todayOrders.sumOf { it.totalAmount }
+    val lowStock = remember(products) { products.filter { it.stockQuantity <= it.minStockThreshold } }
+
+    val filteredOrders = remember(orders, searchQuery, selectedDateRange, selectedStatus) {
         val cal = Calendar.getInstance()
-
-        // Calculate start of today
-        cal.timeInMillis = now
-        cal.set(Calendar.HOUR_OF_DAY, 0)
-        cal.set(Calendar.MINUTE, 0)
-        cal.set(Calendar.SECOND, 0)
-        cal.set(Calendar.MILLISECOND, 0)
-        val startOfToday = cal.timeInMillis
-
-        // Calculate start of this week (Monday)
+        cal.timeInMillis = startOfToday()
+        val startOfDay = cal.timeInMillis
         cal.set(Calendar.DAY_OF_WEEK, cal.firstDayOfWeek)
         val startOfWeek = cal.timeInMillis
-
-        // Calculate start of this month
-        cal.timeInMillis = now
+        cal.timeInMillis = startOfDay
         cal.set(Calendar.DAY_OF_MONTH, 1)
-        cal.set(Calendar.HOUR_OF_DAY, 0)
-        cal.set(Calendar.MINUTE, 0)
-        cal.set(Calendar.SECOND, 0)
-        cal.set(Calendar.MILLISECOND, 0)
         val startOfMonth = cal.timeInMillis
+        val query = searchQuery.trim().lowercase()
 
         orders.filter { order ->
-            // 1. Text Search matching (Customer Name, Invoice #, Phone, or Line Item Name)
-            val matchesSearch = if (searchQuery.isBlank()) {
-                true
-            } else {
-                val queryLower = searchQuery.trim().lowercase()
-                order.customerName.lowercase().contains(queryLower) ||
-                        order.invoiceNumber.lowercase().contains(queryLower) ||
-                        order.customerPhone.contains(queryLower) ||
-                        order.itemsJson.lowercase().contains(queryLower) ||
-                        order.notes.lowercase().contains(queryLower)
-            }
-
-            // 2. Date Range filter
+            val matchesSearch = query.isEmpty() ||
+                order.customerName.lowercase().contains(query) ||
+                order.invoiceNumber.lowercase().contains(query) ||
+                order.customerPhone.contains(query) ||
+                order.itemsJson.lowercase().contains(query) ||
+                order.notes.lowercase().contains(query)
             val matchesDate = when (selectedDateRange) {
                 DateRangeFilter.ALL -> true
-                DateRangeFilter.TODAY -> order.timestamp >= startOfToday
+                DateRangeFilter.TODAY -> order.timestamp >= startOfDay
                 DateRangeFilter.THIS_WEEK -> order.timestamp >= startOfWeek
                 DateRangeFilter.THIS_MONTH -> order.timestamp >= startOfMonth
             }
-
-            // 3. Product Type filter
-            val matchesProduct = if (selectedProductType == ProductTypeFilter.ALL) {
-                true
-            } else {
-                val items = Formatters.parseCartItems(order.itemsJson)
-                items.any { item ->
-                    val nameLower = item.productName.lowercase()
-                    val categoryLower = item.category.lowercase()
-                    selectedProductType.keywords.any { kw ->
-                        nameLower.contains(kw) || categoryLower.contains(kw)
-                    }
-                }
-            }
-
-            matchesSearch && matchesDate && matchesProduct
+            val matchesStatus = selectedStatus == PaymentStatusFilter.ALL || order.paymentStatus == selectedStatus.name
+            matchesSearch && matchesDate && matchesStatus
         }
     }
+    val filtersActive = searchQuery.isNotBlank() || selectedDateRange != DateRangeFilter.ALL || selectedStatus != PaymentStatusFilter.ALL
 
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-            .padding(horizontal = 16.dp),
-        contentPadding = PaddingValues(top = 16.dp, bottom = 96.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+            .background(MaterialTheme.colorScheme.background),
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 32.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        // 1. Business Brand Header
         item {
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("farm_header_card"),
-                shape = RoundedCornerShape(14.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+            ScreenHeader(
+                title = settings.businessName.ifBlank { "My Business" },
+                eyebrow = "${greeting()} · ${Formatters.formatDateShort(System.currentTimeMillis()).substringBefore(",")}",
+                modifier = Modifier.testTag("farm_header_card")
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(48.dp)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(PastelSkyLight),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            painter = painterResource(id = R.drawable.ic_naadriel_logo),
-                            contentDescription = "Naadriel Logo",
-                            tint = Color.Unspecified,
-                            modifier = Modifier.size(42.dp)
-                        )
-                    }
+                Avatar(settings.businessName.ifBlank { "B" }, size = 44.dp)
+            }
+        }
 
-                    Spacer(modifier = Modifier.width(14.dp))
+        // Hero: total sales with collected / outstanding split
+        item {
+            HeroSalesCard(
+                totalRevenue = totalRevenue,
+                totalCollected = totalCollected,
+                totalDebt = totalDebt,
+                debtorCount = debtors.size,
+                currency = currency,
+                onClickDebt = onNavigateToDebtors
+            )
+        }
 
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = settings.businessName,
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            text = settings.businessTagline,
-                            style = MaterialTheme.typography.bodySmall,
-                            fontWeight = FontWeight.Medium,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        Text(
-                            text = "Eggs • Dressed & Live Chicken (Broilers / Sasso)",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                QuickAction("New sale", Icons.Default.AddShoppingCart, Tone.PRIMARY, Modifier.weight(1f).testTag("dashboard_new_sale_button"), onNavigateToNewSale)
+                QuickAction("Collect", Icons.Default.Payments, Tone.SUCCESS, Modifier.weight(1f).testTag("dashboard_debtors_button"), onNavigateToDebtors)
+                QuickAction("Products", Icons.Default.Inventory2, Tone.INFO, Modifier.weight(1f), onNavigateToProducts)
+            }
+        }
+
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                MetricMiniCard("Today", Formatters.formatCurrency(todaySales, currency), Icons.AutoMirrored.Filled.TrendingUp, Tone.PRIMARY, Modifier.weight(1f),
+                    caption = "${todayOrders.size} ${if (todayOrders.size == 1) "sale" else "sales"}")
+                MetricMiniCard("Invoices", orders.size.toString(), Icons.AutoMirrored.Filled.ReceiptLong, Tone.NEUTRAL, Modifier.weight(1f),
+                    caption = "all time")
+            }
+        }
+
+        if (lowStock.isNotEmpty()) {
+            item {
+                AppCard(onClick = onNavigateToProducts, contentPadding = PaddingValues(14.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconBadge(Icons.Default.Inventory, tone = Tone.WARNING)
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("${lowStock.size} ${if (lowStock.size == 1) "product is" else "products are"} running low",
+                                style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface)
+                            Text(lowStock.take(3).joinToString { it.name },
+                                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                        Icon(Icons.Default.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
         }
 
-        // 2. Metrics Overview Cards
         item {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                // Outstanding Debt / Receivables Hero Card (Stripe Metric Surface)
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onNavigateToDebtors() }
-                        .testTag("debt_hero_card"),
-                    shape = RoundedCornerShape(14.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surface
-                    ),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-                    border = BorderStroke(
-                        width = 1.dp,
-                        color = if (totalDebt > 0) DebtRed.copy(alpha = 0.35f) else StripeCardBorder
-                    )
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp)
-                    ) {
-                        // Header Row: Icon + Title + Action Pill
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(32.dp)
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(
-                                            if (totalDebt > 0) DebtRedContainer
-                                            else FarmGreenContainer
-                                        ),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(
-                                        imageVector = if (totalDebt > 0) Icons.Default.WarningAmber else Icons.Default.CheckCircle,
-                                        contentDescription = null,
-                                        tint = if (totalDebt > 0) DebtRed else FarmGreen,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                }
-
-                                Column {
-                                    Text(
-                                        text = if (totalDebt > 0) "Outstanding Customer Debt" else "All Accounts Balanced",
-                                        style = MaterialTheme.typography.titleMedium,
-                                        fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.onSurface
-                                    )
-                                    Text(
-                                        text = if (totalDebt > 0) "${debtors.size} ${if (debtors.size == 1) "customer owes" else "customers owe"} pending balance" else "Zero pending customer debt",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            }
-
-                            // Right Action Chip (Outline Pill)
-                            Surface(
-                                shape = RoundedCornerShape(6.dp),
-                                color = MaterialTheme.colorScheme.surfaceVariant,
-                                border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant)
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                ) {
-                                    Text(
-                                        text = "Ledger",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.onSurface
-                                    )
-                                    Icon(
-                                        imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                                        contentDescription = "View Debtors",
-                                        tint = MaterialTheme.colorScheme.onSurface,
-                                        modifier = Modifier.size(12.dp)
-                                    )
-                                }
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        // Main Monetary Amount
-                        Text(
-                            text = Formatters.formatCurrency(totalDebt, settings.currencySymbol),
-                            style = MaterialTheme.typography.headlineLarge,
-                            fontWeight = FontWeight.Bold,
-                            color = if (totalDebt > 0) DebtRed else MaterialTheme.colorScheme.primary
-                        )
-                    }
-                }
-
-                // Revenue & Collected Grid
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    MetricMiniCard(
-                        title = "Gross Sales",
-                        value = Formatters.formatCurrency(totalRevenue, settings.currencySymbol),
-                        icon = Icons.Default.TrendingUp,
-                        iconTint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.weight(1f)
-                    )
-
-                    MetricMiniCard(
-                        title = "Cash Collected",
-                        value = Formatters.formatCurrency(totalCollected, settings.currencySymbol),
-                        icon = Icons.Default.Payments,
-                        iconTint = FarmGreen,
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-            }
-        }
-
-        // 3. Action Hub
-        item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                // New Sale Main Button
-                Button(
-                    onClick = onNavigateToNewSale,
-                    modifier = Modifier
-                        .weight(1.3f)
-                        .height(48.dp)
-                        .testTag("dashboard_new_sale_button"),
-                    shape = RoundedCornerShape(10.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-                ) {
-                    Icon(Icons.Default.AddShoppingCart, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("New Sale / Bill", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
-                }
-
-                // Balances Button
-                OutlinedButton(
-                    onClick = onNavigateToDebtors,
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(48.dp)
-                        .testTag("dashboard_debtors_button"),
-                    shape = RoundedCornerShape(10.dp),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-                ) {
-                    Icon(Icons.Default.People, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurface)
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Balances", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.bodyMedium)
-                }
-            }
-        }
-
-        // 4. Products & Pricing Quick Shortcut
-        item {
-            Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.surface,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { onNavigateToProducts() }
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 14.dp, vertical = 12.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .size(32.dp)
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(Icons.Default.Storefront, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
-                        }
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Column {
-                            Text(text = "Poultry Catalog & Prices", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
-                            Text(text = "Eggs, Live/Dressed Broilers & Sasso Chicken", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    }
-                    Icon(Icons.Default.ArrowForward, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(16.dp))
-                }
-            }
-        }
-
-        // 5. Search Bar & Filter Chips Header
-        item {
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "Sales & Invoices",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = "${filteredOrders.size} of ${orders.size} orders",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-
-                // Search Bar
-                OutlinedTextField(
+                SectionHeader(
+                    title = "Recent sales",
+                    trailing = if (filtersActive) "Reset" else "${orders.size} total",
+                    onTrailingClick = if (filtersActive) ({
+                        searchQuery = ""; selectedDateRange = DateRangeFilter.ALL; selectedStatus = PaymentStatusFilter.ALL
+                    }) else null
+                )
+                SearchField(
                     value = searchQuery,
                     onValueChange = { searchQuery = it },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("sales_search_input"),
-                    placeholder = { Text("Search customer, invoice #, phone, product...") },
-                    leadingIcon = {
-                        Icon(
-                            Icons.Default.Search,
-                            contentDescription = "Search",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    },
-                    trailingIcon = {
-                        if (searchQuery.isNotEmpty()) {
-                            IconButton(onClick = { searchQuery = "" }) {
-                                Icon(Icons.Default.Close, contentDescription = "Clear search", modifier = Modifier.size(18.dp))
-                            }
-                        }
-                    },
-                    singleLine = true,
-                    shape = RoundedCornerShape(14.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedContainerColor = MaterialTheme.colorScheme.surface,
-                        unfocusedContainerColor = MaterialTheme.colorScheme.surface,
-                        focusedBorderColor = BrandGreenPrimary,
-                        unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
-                    )
+                    placeholder = "Search customer, invoice, product",
+                    modifier = Modifier.testTag("sales_search_input")
                 )
-
-                // Date Range Filter Chips
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(
-                        text = "FILTER BY DATE RANGE",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary,
-                        fontSize = 11.sp
-                    )
-                    LazyRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        items(DateRangeFilter.values()) { dateFilter ->
-                            FilterChip(
-                                selected = selectedDateRange == dateFilter,
-                                onClick = { selectedDateRange = dateFilter },
-                                label = {
-                                    Text(
-                                        text = dateFilter.label,
-                                        fontWeight = if (selectedDateRange == dateFilter) FontWeight.Bold else FontWeight.Normal,
-                                        fontSize = 12.sp
-                                    )
-                                },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = BrandGreenPrimary,
-                                    selectedLabelColor = Color.White
-                                )
-                            )
-                        }
-                    }
-                }
-
-                // Product Type Filter Chips
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(
-                        text = "FILTER BY PRODUCT TYPE",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary,
-                        fontSize = 11.sp
-                    )
-                    LazyRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        items(ProductTypeFilter.values()) { prodFilter ->
-                            FilterChip(
-                                selected = selectedProductType == prodFilter,
-                                onClick = { selectedProductType = prodFilter },
-                                label = {
-                                    Text(
-                                        text = prodFilter.label,
-                                        fontWeight = if (selectedProductType == prodFilter) FontWeight.Bold else FontWeight.Normal,
-                                        fontSize = 12.sp
-                                    )
-                                },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = BrandGreenPrimaryDark,
-                                    selectedLabelColor = Color.White
-                                )
-                            )
-                        }
-                    }
-                }
-
-                // Active filters clear button when filters applied
-                if (searchQuery.isNotBlank() || selectedDateRange != DateRangeFilter.ALL || selectedProductType != ProductTypeFilter.ALL) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "Showing matching filtered transactions",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = BrandGreenPrimary,
-                            fontWeight = FontWeight.SemiBold
+                SegmentedControl(
+                    options = DateRangeFilter.entries,
+                    selected = selectedDateRange,
+                    onSelect = { selectedDateRange = it },
+                    label = { it.label }
+                )
+                ChipRow {
+                    PaymentStatusFilter.entries.forEach { f ->
+                        PillChip(
+                            text = f.label,
+                            selected = selectedStatus == f,
+                            onClick = { selectedStatus = f },
+                            count = if (f == PaymentStatusFilter.ALL) null else orders.count { it.paymentStatus == f.name }
                         )
-                        TextButton(
-                            onClick = {
-                                searchQuery = ""
-                                selectedDateRange = DateRangeFilter.ALL
-                                selectedProductType = ProductTypeFilter.ALL
-                            },
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
-                        ) {
-                            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(14.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Reset Filters", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        }
                     }
                 }
             }
         }
 
-        // 6. Orders List
-        if (orders.isEmpty()) {
-            item {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(24.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Icon(
-                            Icons.Default.ReceiptLong,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(48.dp)
-                        )
-                        Spacer(modifier = Modifier.height(10.dp))
-                        Text(
-                            text = "No sales recorded yet",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = "Tap 'New Sale / Bill' above to record sales for Eggs, Live or Dressed Broilers and Sasso chicken.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                        )
-                    }
+        when {
+            orders.isEmpty() -> item {
+                AppCard {
+                    EmptyState(
+                        icon = Icons.AutoMirrored.Filled.ReceiptLong,
+                        title = "No sales yet",
+                        message = "Record your first sale and it will show up here with its receipt.",
+                        tone = Tone.PRIMARY,
+                        actionText = "Start a sale",
+                        onAction = onNavigateToNewSale
+                    )
                 }
             }
-        } else if (filteredOrders.isEmpty()) {
-            item {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(24.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Icon(
-                            Icons.Default.FilterAltOff,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(42.dp)
-                        )
-                        Spacer(modifier = Modifier.height(10.dp))
-                        Text(
-                            text = "No matching sales found",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = "No transactions match your current search query, date range, or product filter.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                        )
-                        Spacer(modifier = Modifier.height(12.dp))
-                        OutlinedButton(
-                            onClick = {
-                                searchQuery = ""
-                                selectedDateRange = DateRangeFilter.ALL
-                                selectedProductType = ProductTypeFilter.ALL
-                            },
-                            shape = RoundedCornerShape(10.dp)
-                        ) {
-                            Text("Clear All Filters")
-                        }
-                    }
+            filteredOrders.isEmpty() -> item {
+                AppCard {
+                    EmptyState(
+                        icon = Icons.Default.FilterAltOff,
+                        title = "No matching sales",
+                        message = "Try a different search, date range or payment status.",
+                        actionText = "Clear filters",
+                        onAction = { searchQuery = ""; selectedDateRange = DateRangeFilter.ALL; selectedStatus = PaymentStatusFilter.ALL }
+                    )
                 }
             }
-        } else {
-            items(filteredOrders) { order ->
+            else -> items(filteredOrders, key = { it.id }) { order ->
                 SaleOrderCard(
                     order = order,
                     settings = settings,
                     onClickReceipt = { onSelectOrderReceipt(order) },
                     onWhatsAppShare = {
-                        val phone = if (order.customerWhatsapp.isNotBlank()) order.customerWhatsapp else order.customerPhone
+                        val phone = order.customerWhatsapp.ifBlank { order.customerPhone }
                         val imageFile = DigitalReceiptGenerator.generateReceiptBitmap(context, order, settings)
                         if (imageFile != null) {
-                            val caption = "🧾 Official Receipt #${order.invoiceNumber} from ${settings.businessName}"
                             DigitalReceiptGenerator.shareDigitalFile(
                                 context = context,
                                 file = imageFile,
                                 mimeType = "image/png",
-                                captionText = caption,
+                                captionText = "🧾 Receipt #${order.invoiceNumber} from ${settings.businessName}",
                                 recipientPhone = phone,
                                 preferWhatsApp = true
                             )
                         } else {
-                            val receiptText = Formatters.buildWhatsAppReceipt(order, settings)
-                            SmsService.shareViaWhatsApp(context, phone, receiptText)
+                            SmsService.shareViaWhatsApp(context, phone, Formatters.buildWhatsAppReceipt(order, settings))
                         }
                     },
                     onSendSms = { onSendSms(order) },
-                    onEditOrder = if (onEditOrder != null) { { onEditOrder(order) } } else null,
-                    onVoidOrder = if (onVoidOrder != null) { { orderToVoid = order } } else null
+                    onEditOrder = onEditOrder?.let { { it(order) } },
+                    onVoidOrder = onVoidOrder?.let { { orderToVoid = order } }
                 )
             }
         }
     }
 
-    // Void Order Confirmation Dialog
-    if (orderToVoid != null && onVoidOrder != null) {
-        val target = orderToVoid!!
-        val debtMsg = if (target.balanceDue > 0) {
-            "\n• Reverse customer's balance due: ${Formatters.formatCurrency(target.balanceDue, settings.currencySymbol)}"
-        } else ""
-
+    val target = orderToVoid
+    if (target != null && onVoidOrder != null) {
+        val debtMsg = if (target.balanceDue > 0) "\n• Reverse the customer's balance of ${Formatters.formatCurrency(target.balanceDue, currency)}" else ""
         ConfirmationDialog(
-            title = "Void Sale Invoice?",
-            message = "Are you sure you want to void Invoice #${target.invoiceNumber} for '${target.customerName}'?\n\nThis will automatically:\n• Restore all line items back to your inventory stock$debtMsg\n• Permanently remove this sale from records.",
-            confirmButtonText = "Void & Restore Stock",
-            cancelButtonText = "Keep Sale",
+            title = "Void this sale?",
+            message = "Invoice #${target.invoiceNumber} for ${target.customerName} will be removed.\n\n• Return all items to stock$debtMsg",
+            confirmButtonText = "Void sale",
+            cancelButtonText = "Keep",
             isDestructive = true,
             onConfirm = {
-                val toCancel = orderToVoid
                 orderToVoid = null
-                if (toCancel != null) {
-                    onVoidOrder(toCancel)
-                }
+                onVoidOrder(target)
             },
             onDismiss = { orderToVoid = null }
         )
+    }
+}
+
+@Composable
+private fun HeroSalesCard(
+    totalRevenue: Double,
+    totalCollected: Double,
+    totalDebt: Double,
+    debtorCount: Int,
+    currency: String,
+    onClickDebt: () -> Unit
+) {
+    val c = MaterialTheme.colorScheme
+    // Solid indigo in light mode; a deep indigo container in dark mode so the card doesn't glare.
+    val dark = AppTheme.status.isDark
+    val onHero = if (dark) c.onPrimaryContainer else c.onPrimary
+    AppCard(
+        color = if (dark) c.primaryContainer else c.primary,
+        borderColor = Color.Transparent,
+        contentPadding = PaddingValues(20.dp),
+        modifier = Modifier.testTag("debt_hero_card")
+    ) {
+        Text("Total sales", style = MaterialTheme.typography.labelLarge, color = onHero.copy(alpha = 0.85f))
+        Spacer(Modifier.height(4.dp))
+        Text(Formatters.formatCurrency(totalRevenue, currency), style = MaterialTheme.typography.headlineLarge, color = onHero,
+            maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Spacer(Modifier.height(16.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            HeroStat("Collected", Formatters.formatCurrency(totalCollected, currency), Icons.Default.CheckCircle, onHero, Modifier.weight(1f))
+            HeroStat(
+                label = if (debtorCount > 0) "Owed · $debtorCount" else "Owed",
+                value = Formatters.formatCurrency(totalDebt, currency),
+                icon = Icons.Default.Schedule,
+                onHero = onHero,
+                modifier = Modifier.weight(1f).clip(RoundedCornerShape(14.dp)).pressable(onClick = onClickDebt)
+            )
+        }
+    }
+}
+
+@Composable
+private fun HeroStat(label: String, value: String, icon: ImageVector, onHero: Color, modifier: Modifier = Modifier) {
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(14.dp))
+            .background(onHero.copy(alpha = 0.12f))
+            .padding(12.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(icon, contentDescription = null, tint = onHero, modifier = Modifier.size(14.dp))
+            Spacer(Modifier.width(6.dp))
+            Text(label, style = MaterialTheme.typography.labelMedium, color = onHero.copy(alpha = 0.9f), maxLines = 1)
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(value, style = MaterialTheme.typography.titleMedium, color = onHero, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+@Composable
+private fun QuickAction(label: String, icon: ImageVector, tone: Tone, modifier: Modifier, onClick: () -> Unit) {
+    AppCard(onClick = onClick, modifier = modifier, contentPadding = PaddingValues(vertical = 14.dp, horizontal = 8.dp)) {
+        Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+            IconBadge(icon, tone = tone, size = 44.dp, iconSize = 22.dp, shape = RoundedCornerShape(14.dp))
+            Spacer(Modifier.height(8.dp))
+            Text(label, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurface, maxLines = 1)
+        }
     }
 }
 
@@ -713,58 +356,37 @@ fun MetricMiniCard(
     title: String,
     value: String,
     icon: ImageVector,
-    iconTint: Color,
-    modifier: Modifier = Modifier
+    tone: Tone,
+    modifier: Modifier = Modifier,
+    caption: String? = null
 ) {
-    Card(
-        modifier = modifier,
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 12.dp)
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text(
-                    text = title.uppercase(),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Box(
-                    modifier = Modifier
-                        .size(24.dp)
-                        .clip(RoundedCornerShape(6.dp))
-                        .background(iconTint.copy(alpha = 0.12f)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = icon,
-                        contentDescription = null,
-                        tint = iconTint,
-                        modifier = Modifier.size(14.dp)
-                    )
-                }
-            }
-            Spacer(modifier = Modifier.height(6.dp))
-            Text(
-                text = value,
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface
-            )
+    AppCard(modifier = modifier, contentPadding = PaddingValues(14.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconBadge(icon, tone = tone, size = 32.dp, iconSize = 16.dp, shape = RoundedCornerShape(10.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(title, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+        }
+        Spacer(Modifier.height(10.dp))
+        Text(value, style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        if (caption != null) {
+            Text(caption, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
+
+fun paymentStatusTone(status: String): Tone = when (status) {
+    "PAID" -> Tone.SUCCESS
+    "PARTIAL" -> Tone.WARNING
+    else -> Tone.DANGER
+}
+
+fun paymentStatusLabel(status: String): String = when (status) {
+    "PAID" -> "Paid"
+    "PARTIAL" -> "Partial"
+    else -> "Unpaid"
+}
+
+fun formatQty(qty: Double): String = if (qty % 1.0 == 0.0) qty.toInt().toString() else qty.toString()
 
 @Composable
 fun SaleOrderCard(
@@ -776,253 +398,74 @@ fun SaleOrderCard(
     onEditOrder: (() -> Unit)? = null,
     onVoidOrder: (() -> Unit)? = null
 ) {
-    val items = Formatters.parseCartItems(order.itemsJson)
+    val items = remember(order.itemsJson) { Formatters.parseCartItems(order.itemsJson) }
+    val currency = settings.currencySymbol
 
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onClickReceipt() }
-            .testTag("sale_order_card_${order.id}"),
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+    AppCard(
+        onClick = onClickReceipt,
+        contentPadding = PaddingValues(14.dp),
+        modifier = Modifier.testTag("sale_order_card_${order.id}")
     ) {
-        Column(modifier = Modifier.padding(14.dp)) {
-            // Header: Invoice # & Time metadata + Payment Pill
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Text(
-                        text = "#${order.invoiceNumber}",
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Text(
-                        text = "•",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.outline
-                    )
-                    Text(
-                        text = Formatters.formatDateShort(order.timestamp),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    // Status Badge: Flat background, crisp borders, bold uppercase label
-                    Surface(
-                        shape = RoundedCornerShape(6.dp),
-                        color = when (order.paymentStatus) {
-                            "PAID" -> FarmGreenContainer
-                            "PARTIAL" -> BrandAmberGoldContainer
-                            else -> DebtRedContainer
-                        },
-                        border = BorderStroke(
-                            0.5.dp,
-                            when (order.paymentStatus) {
-                                "PAID" -> FarmGreen.copy(alpha = 0.4f)
-                                "PARTIAL" -> BrandAmberGold.copy(alpha = 0.4f)
-                                else -> DebtRed.copy(alpha = 0.4f)
-                            }
-                        )
-                    ) {
-                        Text(
-                            text = when (order.paymentStatus) {
-                                "PAID" -> "PAID"
-                                "PARTIAL" -> "PARTIAL"
-                                else -> "BALANCE DUE"
-                            },
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = when (order.paymentStatus) {
-                                "PAID" -> FarmGreen
-                                "PARTIAL" -> BrandAmberGold
-                                else -> DebtRed
-                            }
-                        )
-                    }
-
-                    if (onVoidOrder != null) {
-                        IconButton(
-                            onClick = onVoidOrder,
-                            modifier = Modifier
-                                .size(28.dp)
-                                .testTag("void_order_button_${order.id}")
-                        ) {
-                            Icon(
-                                Icons.Default.DeleteOutline,
-                                contentDescription = "Void Sale Invoice",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                                modifier = Modifier.size(16.dp)
-                            )
-                        }
-                    }
-                }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Avatar(order.customerName, size = 42.dp)
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(order.customerName, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text("#${order.invoiceNumber} · ${Formatters.formatDateShort(order.timestamp)}",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
+            Spacer(Modifier.width(8.dp))
+            Column(horizontalAlignment = Alignment.End) {
+                Text(Formatters.formatCurrency(order.totalAmount, currency), style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurface)
+                Spacer(Modifier.height(4.dp))
+                StatusBadge(paymentStatusLabel(order.paymentStatus), paymentStatusTone(order.paymentStatus))
+            }
+        }
 
-            Spacer(modifier = Modifier.height(6.dp))
-
-            // Customer Name & Subtitle
+        if (items.isNotEmpty()) {
+            Spacer(Modifier.height(10.dp))
             Text(
-                text = order.customerName,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface
+                text = items.joinToString(" · ") { "${formatQty(it.quantity)}× ${it.productName}" },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
+        }
 
-            // Items breakdown summary (Hairline border pill container)
-            if (items.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(6.dp))
-                Surface(
-                    shape = RoundedCornerShape(6.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(
-                        text = items.joinToString("  •  ") { "${if (it.quantity % 1.0 == 0.0) it.quantity.toInt() else it.quantity} ${it.productName}" },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+        Spacer(Modifier.height(12.dp))
+        HairlineDivider()
+        Spacer(Modifier.height(10.dp))
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                when {
+                    order.balanceDue > 0 -> Text("Balance ${Formatters.formatCurrency(order.balanceDue, currency)}",
+                        style = MaterialTheme.typography.labelLarge, color = toneColors(Tone.DANGER).content)
+                    else -> Text("Settled", style = MaterialTheme.typography.labelLarge, color = toneColors(Tone.SUCCESS).content)
+                }
+                if (order.discountAmount > 0) {
+                    Text("Discount ${Formatters.formatCurrency(order.discountAmount, currency)}",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            // Financial & Action Row with Hairline Separation
-            HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = Formatters.formatCurrency(order.totalAmount, settings.currencySymbol),
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        if (order.discountAmount > 0) {
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Surface(
-                                shape = RoundedCornerShape(4.dp),
-                                color = WarningAmberContainer
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(
-                                        Icons.Default.Sell,
-                                        contentDescription = null,
-                                        tint = WarningAmber,
-                                        modifier = Modifier.size(10.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(2.dp))
-                                    Text(
-                                        text = "-${Formatters.formatCurrency(order.discountAmount, settings.currencySymbol)}",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontWeight = FontWeight.Bold,
-                                        color = WarningAmber
-                                    )
-                                }
-                            }
-                        }
-                    }
-                    if (order.balanceDue > 0) {
-                        Text(
-                            text = "Due: ${Formatters.formatCurrency(order.balanceDue, settings.currencySymbol)}",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = DebtRed
-                        )
-                    }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (onEditOrder != null) {
+                    CircleIconButton(Icons.Default.Edit, "Edit invoice", onEditOrder, size = 36.dp,
+                        modifier = Modifier.testTag("edit_order_button_${order.id}"))
                 }
-
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    // Edit Invoice Button
-                    if (onEditOrder != null) {
-                        OutlinedButton(
-                            onClick = onEditOrder,
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                            modifier = Modifier
-                                .height(32.dp)
-                                .testTag("edit_order_button_${order.id}"),
-                            shape = RoundedCornerShape(8.dp),
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-                        ) {
-                            Icon(Icons.Default.Edit, contentDescription = "Edit Invoice", modifier = Modifier.size(13.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Edit", style = MaterialTheme.typography.labelSmall)
-                        }
-                    }
-
-                    // WhatsApp share button
-                    Surface(
-                        onClick = onWhatsAppShare,
-                        shape = RoundedCornerShape(8.dp),
-                        color = WhatsAppGreen.copy(alpha = 0.12f),
-                        border = BorderStroke(0.5.dp, WhatsAppGreen.copy(alpha = 0.3f)),
-                        modifier = Modifier
-                            .size(32.dp)
-                            .testTag("whatsapp_order_button_${order.id}")
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                                Icons.Default.Share,
-                                contentDescription = "Share on WhatsApp",
-                                tint = WhatsAppGreen,
-                                modifier = Modifier.size(16.dp)
-                            )
-                        }
-                    }
-
-                    // SMS trigger button
-                    Surface(
-                        onClick = onSendSms,
-                        shape = RoundedCornerShape(8.dp),
-                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
-                        border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)),
-                        modifier = Modifier
-                            .size(32.dp)
-                            .testTag("sms_order_button_${order.id}")
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                                Icons.Default.Sms,
-                                contentDescription = "Send SMS",
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(16.dp)
-                            )
-                        }
-                    }
+                CircleIconButton(Icons.Default.Share, "Share on WhatsApp", onWhatsAppShare, tone = Tone.SUCCESS, size = 36.dp,
+                    modifier = Modifier.testTag("whatsapp_order_button_${order.id}"))
+                CircleIconButton(Icons.Default.Sms, "Send SMS", onSendSms, tone = Tone.PRIMARY, size = 36.dp,
+                    modifier = Modifier.testTag("sms_order_button_${order.id}"))
+                if (onVoidOrder != null) {
+                    CircleIconButton(Icons.Default.DeleteOutline, "Void sale", onVoidOrder, tone = Tone.DANGER, size = 36.dp,
+                        modifier = Modifier.testTag("void_order_button_${order.id}"))
                 }
             }
         }
     }
 }
-
