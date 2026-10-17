@@ -19,8 +19,8 @@ header('Cache-Control: no-store');
 // 1. CONFIGURATION (Edit with your cPanel info)
 // ==========================================
 $DB_HOST        = 'localhost';
-$DB_NAME        = 'YOUR_CPANEL_USERNAME_farm_db'; // e.g., 'naadriel_farm_db'
-$DB_USER        = 'YOUR_CPANEL_USERNAME_farm_user';
+$DB_NAME        = 'YOUR_CPANEL_USERNAME_biztrack'; // e.g., 'ama_biztrack'
+$DB_USER        = 'YOUR_CPANEL_USERNAME_biztrack_user';
 $DB_PASS        = 'YOUR_STRONG_DATABASE_PASSWORD';
 $API_SECRET_KEY = 'CHANGE_ME_TO_A_LONG_RANDOM_SECRET'; // 32+ random chars. Match this in the Android App Settings!
 
@@ -471,7 +471,7 @@ try {
 
     echo json_encode([
         'status'          => 'success',
-        'message'         => 'Cloud MySQL database successfully updated with latest farm records.',
+        'message'         => 'Cloud MySQL database successfully updated with your latest records.',
         'serverTimestamp' => round(microtime(true) * 1000)
     ]);
 } catch (Exception $e) {

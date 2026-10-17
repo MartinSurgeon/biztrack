@@ -15,7 +15,7 @@ This web interface allows you to manage your business inventory, sales, customer
 ## 🚀 How to Set Up on Your Web Server (cPanel / Namecheap)
 
 1. **Upload Files to cPanel**:
-   - In cPanel **File Manager**, open `public_html/` (or a subdirectory like `public_html/farm/` or `public_html/api/`).
+   - In cPanel **File Manager**, open `public_html/` (or a subdirectory like `public_html/biztrack/` or `public_html/api/`).
    - Upload `index.php`, `sync.php`, and import `schema.sql` into your phpMyAdmin database.
 
 2. **Create `config.php`** next to `sync.php` (never commit it):
@@ -32,20 +32,24 @@ This web interface allows you to manage your business inventory, sales, customer
 
 
 3. **Access from Your Laptop**:
-   - Open your laptop browser and go to: `https://yourdomain.com/farm/index.php`
+   - Open your laptop browser and go to: `https://yourdomain.com/biztrack/index.php`
    - Enter your **Cloud Secret Key** to log in.
 
 ---
 
 ## 💻 Available CRUD Features on the Web Dashboard
 
-- **Dashboard Overview**: Live sales totals, cash collected, total outstanding debts, and low stock warnings.
-- **New Sale (Web POS)**: Create orders, select or type customers, calculate discounts, apply cash/MoMo/credit, automatically deduct product inventory stock, and log inventory movements.
-- **Products & Stock Inventory**: Add new products (live broilers, crates of eggs, feed, layers, processed meat), edit prices, delete items, and perform quick restocks.
-- **Customers & Debtors Ledger**: Track customer purchase histories, view debtors owing money, edit contacts, and view WhatsApp links.
-- **Debt Recovery & Payments**: Record payments from debtors, which automatically reduces their balance in MySQL and marks their credit invoices as paid.
-- **Inventory Audit History**: Complete log of every stock deduction and addition.
-- **Farm Profile & Settings**: Update business name, phone, tagline, MoMo details, and currency symbol.
+Works for any kind of business (shop, salon, restaurant, repairs, farm…), in light or dark mode, on desktop and phone.
+
+- **Dashboard**: Today's and this month's sales (with change vs. the same days last month), money collected, money owed, a 14-day sales chart, best sellers, who owes you, and what's running low.
+- **New sale (POS)**: Tap products to add them (search and category filters), adjust quantities and prices, pick or type a customer, apply a discount, choose full / deposit / credit payment and a method. Stock is deducted automatically and a receipt opens when you're done.
+- **Sales**: Search and filter by date or payment status, see running totals, and open any invoice as a printable receipt or share it on WhatsApp.
+- **Products**: Goods or services in any category, selling and cost price (margin shown automatically), add or remove stock, and low-stock alerts.
+- **Customers**: Everyone you sell to, who owes what, one-click "Collect" payments, and WhatsApp payment reminders pre-filled with the balance.
+- **Payments** and **Stock history**: A searchable record of every payment received and every stock change.
+- **Settings**: Business name, tagline, phone, location, payment instructions and currency, with a live receipt preview.
+
+Keyboard shortcuts: `N` new sale · `/` search · `Esc` close dialogs.
 
 ---
 

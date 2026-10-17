@@ -1,11 +1,11 @@
 <?php
 /**
  * =========================================================================
- * BIZTRACK POS & BUSINESS MANAGER - WEB DASHBOARD
- * Complete CRUD Web Interface for Laptop & Desktop Browsers
- * 
- * Works directly with your Namecheap / cPanel MySQL database.
- * Changes made here immediately reflect in your Android app upon sync!
+ * BIZTRACK - WEB DASHBOARD
+ * Sales, stock, customers and payments for any kind of business.
+ *
+ * Works directly with your cPanel MySQL database. Changes made here show up
+ * in the Android app on its next sync.
  * =========================================================================
  */
 
@@ -40,6 +40,345 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
     http_response_code(403);
     exit('Invalid or expired form token. Go back, reload the page and try again.');
 }
+
+// ----------------------------------------------------
+// 0. SHARED VOCABULARY (kept in sync with the Android app)
+// ----------------------------------------------------
+
+// Product categories: same keys as ProductCategory in the app. Legacy farm keys
+// are only shown when a product already uses them.
+$CATEGORIES = [
+    'GENERAL'       => 'General',
+    'FOOD_DRINKS'   => 'Food & Drinks',
+    'GROCERIES'     => 'Groceries',
+    'FASHION'       => 'Fashion & Apparel',
+    'ELECTRONICS'   => 'Electronics',
+    'HEALTH_BEAUTY' => 'Health & Beauty',
+    'HOME_HARDWARE' => 'Home & Hardware',
+    'AGRICULTURE'   => 'Agriculture & Farm',
+    'SERVICES'      => 'Services',
+    'OTHER'         => 'Other',
+];
+$LEGACY_CATEGORIES = [
+    'EGGS' => 'Eggs', 'BROILER_LIVE' => 'Live Broiler Chicken', 'BROILER_DRESSED' => 'Dressed Broiler Chicken',
+    'SASSO_LIVE' => 'Live Sasso Chicken', 'SASSO_DRESSED' => 'Dressed Sasso Chicken',
+    'BROILER' => 'Broiler', 'LAYER' => 'Layer', 'FEED' => 'Feed', 'PROCESSED' => 'Processed',
+];
+// Same values as PaymentMethod in the app.
+$PAYMENT_METHODS = ['CASH' => 'Cash', 'MOMO' => 'Mobile money', 'BANK_TRANSFER' => 'Bank transfer'];
+$COMMON_UNITS = ['Piece', 'Kg', 'Box', 'Pack', 'Bottle', 'Litre', 'Dozen', 'Bag', 'Hour', 'Service'];
+
+function e($v): string { return htmlspecialchars((string)$v, ENT_QUOTES, 'UTF-8'); }
+
+function money($amount): string {
+    global $currency;
+    return e($currency) . ' ' . number_format((float)$amount, 2);
+}
+
+function fmtDate($ms, string $format = 'd M Y, H:i'): string {
+    $sec = (int)round((float)$ms / 1000);
+    return $sec > 0 ? date($format, $sec) : '—';
+}
+
+function fmtQty($q): string {
+    $q = (float)$q;
+    return floor($q) == $q ? number_format($q, 0) : rtrim(rtrim(number_format($q, 2), '0'), '.');
+}
+
+function categoryLabel(string $key): string {
+    global $CATEGORIES, $LEGACY_CATEGORIES;
+    return $CATEGORIES[$key] ?? $LEGACY_CATEGORIES[$key] ?? ucfirst(strtolower(str_replace('_', ' ', $key ?: 'General')));
+}
+
+function methodLabel(string $m): string {
+    global $PAYMENT_METHODS;
+    if ($m === 'BANK') return 'Bank transfer'; // older web records
+    return $PAYMENT_METHODS[$m] ?? ucfirst(strtolower(str_replace('_', ' ', $m ?: 'Cash')));
+}
+
+/** [label, tone] for a sale's payment state. Handles legacy "CREDIT" rows. */
+function saleStatus(array $s): array {
+    $status = strtoupper((string)($s['paymentStatus'] ?? ''));
+    $balance = (float)($s['balanceDue'] ?? 0);
+    if ($balance <= 0.009 || $status === 'PAID') return ['Paid', 'success'];
+    if ($status === 'PARTIAL' || (float)($s['amountPaid'] ?? 0) > 0.009) return ['Partial', 'warning'];
+    return ['Unpaid', 'danger'];
+}
+
+function initials(string $name): string {
+    $parts = preg_split('/\s+/', trim($name)) ?: [];
+    $out = '';
+    foreach (array_slice(array_filter($parts), 0, 2) as $p) $out .= mb_strtoupper(mb_substr($p, 0, 1));
+    return $out ?: '?';
+}
+
+function avatarTone(string $name): string {
+    $tones = ['primary', 'success', 'warning', 'info', 'danger'];
+    return $tones[abs(crc32($name)) % count($tones)];
+}
+
+function csrfField(): string {
+    return '<input type="hidden" name="csrf" value="' . e($_SESSION['csrf'] ?? '') . '">';
+}
+
+function jsonAttr($data): string {
+    return e(json_encode($data, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT));
+}
+
+/** Inline Lucide-style icons (stroke based, inherit currentColor). */
+function icon(string $name, string $class = 'ic'): string {
+    static $paths = [
+        'home' => '<path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/>',
+        'plus' => '<path d="M12 5v14M5 12h14"/>',
+        'minus' => '<path d="M5 12h14"/>',
+        'receipt' => '<path d="M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1Z"/><path d="M8 7h8M8 11h8M8 15h5"/>',
+        'box' => '<path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><path d="M3.27 6.96 12 12.01l8.73-5.05M12 22.08V12"/>',
+        'users' => '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>',
+        'wallet' => '<path d="M19 7V4a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1"/><path d="M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4"/>',
+        'history' => '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5M12 7v5l4 2"/>',
+        'settings' => '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
+        'logout' => '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>',
+        'search' => '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+        'trend' => '<path d="m22 7-8.5 8.5-5-5L2 17"/><path d="M16 7h6v6"/>',
+        'trendDown' => '<path d="m22 17-8.5-8.5-5 5L2 7"/><path d="M16 17h6v-6"/>',
+        'check' => '<path d="M20 6 9 17l-5-5"/>',
+        'checkCircle' => '<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>',
+        'clock' => '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
+        'alert' => '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4M12 17h.01"/>',
+        'x' => '<path d="M18 6 6 18M6 6l12 12"/>',
+        'edit' => '<path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
+        'trash' => '<path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
+        'menu' => '<path d="M4 6h16M4 12h16M4 18h16"/>',
+        'sun' => '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>',
+        'moon' => '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
+        'printer' => '<path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M6 14h12v8H6z"/>',
+        'chat' => '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>',
+        'phone' => '<path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92z"/>',
+        'store' => '<path d="m2 7 4.41-4.41A2 2 0 0 1 7.83 2h8.34a2 2 0 0 1 1.42.59L22 7"/><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8M15 22v-4a2 2 0 0 0-2-2h-2a2 2 0 0 0-2 2v4M2 7h20M22 7v3a2 2 0 0 1-2 2 2.7 2.7 0 0 1-2-1 2.7 2.7 0 0 1-4 0 2.7 2.7 0 0 1-4 0 2.7 2.7 0 0 1-4 0 2.7 2.7 0 0 1-2 1 2 2 0 0 1-2-2V7"/>',
+        'cart' => '<circle cx="8" cy="21" r="1"/><circle cx="19" cy="21" r="1"/><path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12"/>',
+        'arrowRight' => '<path d="M5 12h14M12 5l7 7-7 7"/>',
+        'arrowUp' => '<path d="m5 12 7-7 7 7M12 19V5"/>',
+        'arrowDown' => '<path d="M12 5v14M19 12l-7 7-7-7"/>',
+        'database' => '<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5M3 12a9 3 0 0 0 18 0"/>',
+        'lock' => '<rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+        'tag' => '<path d="M12.59 2.59A2 2 0 0 0 11.17 2H4a2 2 0 0 0-2 2v7.17a2 2 0 0 0 .59 1.41l8.7 8.7a2.43 2.43 0 0 0 3.42 0l6.58-6.58a2.43 2.43 0 0 0 0-3.42z"/><circle cx="7.5" cy="7.5" r=".5"/>',
+        'filterOff' => '<path d="M13.01 4H2l8 9.46V19l4 2v-8.54"/><path d="m22 3-5 5M17 3l5 5"/>',
+    ];
+    $d = $paths[$name] ?? $paths['box'];
+    return '<svg class="' . e($class) . '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' . $d . '</svg>';
+}
+
+/** <head> shared by setup, login and the dashboard. */
+function renderHead(string $title): void { ?>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="light dark">
+<title><?= e($title) ?></title>
+<script>
+  // Apply the saved/system theme before paint to avoid a flash.
+  (function () {
+    var t = null;
+    try { t = localStorage.getItem('bt-theme'); } catch (e) {}
+    if (!t) t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<script src="https://cdn.tailwindcss.com/3.4.16"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  /* ---------- Design tokens (WCAG AA for every text/background pair) ---------- */
+  :root, [data-theme="light"] {
+    --bg: #f4f4f5; --surface: #ffffff; --surface-2: #f4f4f5; --surface-3: #e4e4e7;
+    --border: #e4e4e7; --border-strong: #d4d4d8;
+    --text: #09090b; --muted: #52525b; --subtle: #71717a;
+    --primary: #4f46e5; --primary-hover: #4338ca; --on-primary: #ffffff; --primary-soft: #eef2ff; --on-primary-soft: #312e81;
+    --success: #15803d; --success-soft: #dcfce7; --on-success-soft: #14532d;
+    --warning: #b45309; --warning-soft: #fef3c7; --on-warning-soft: #78350f;
+    --danger: #dc2626; --danger-hover: #b91c1c; --danger-soft: #fee2e2; --on-danger-soft: #7f1d1d;
+    --info: #1d4ed8; --info-soft: #dbeafe; --on-info-soft: #1e3a8a;
+    --ring: rgba(79, 70, 229, .35); --bar: #818cf8;
+    --shadow: 0 1px 2px rgba(0,0,0,.04), 0 4px 16px rgba(0,0,0,.05);
+    --shadow-lg: 0 10px 40px rgba(0,0,0,.14);
+  }
+  [data-theme="dark"] {
+    --bg: #09090b; --surface: #18181b; --surface-2: #27272a; --surface-3: #3f3f46;
+    --border: #27272a; --border-strong: #3f3f46;
+    --text: #fafafa; --muted: #a1a1aa; --subtle: #a1a1aa;
+    --primary: #818cf8; --primary-hover: #a5b4fc; --on-primary: #09090b; --primary-soft: #1e1b4b; --on-primary-soft: #e0e7ff;
+    --success: #4ade80; --success-soft: #0b2e1a; --on-success-soft: #bbf7d0;
+    --warning: #fbbf24; --warning-soft: #3a2306; --on-warning-soft: #fde68a;
+    --danger: #f87171; --danger-hover: #fca5a5; --danger-soft: #3b1212; --on-danger-soft: #fecaca;
+    --info: #60a5fa; --info-soft: #172554; --on-info-soft: #bfdbfe;
+    --ring: rgba(129, 140, 248, .45); --bar: #6366f1;
+    --shadow: 0 0 0 1px var(--border);
+    --shadow-lg: 0 0 0 1px var(--border-strong), 0 20px 50px rgba(0,0,0,.6);
+  }
+  html { background: var(--bg); }
+  body { font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text);
+         -webkit-font-smoothing: antialiased; font-feature-settings: 'cv11', 'ss01'; }
+  .tnum { font-variant-numeric: tabular-nums; }
+  .ic { width: 20px; height: 20px; flex-shrink: 0; }
+  .ic-sm { width: 16px; height: 16px; flex-shrink: 0; }
+  .ic-lg { width: 24px; height: 24px; flex-shrink: 0; }
+  .muted { color: var(--muted); }
+  .subtle { color: var(--subtle); }
+  :focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: 8px; }
+
+  /* ---------- Surfaces ---------- */
+  .card { background: var(--surface); border-radius: 20px; box-shadow: var(--shadow); }
+  .card-pad { padding: 20px; }
+  @media (min-width: 1024px) { .card-pad { padding: 24px; } }
+  .divider { border-top: 1px solid var(--border); }
+  .soft { background: var(--surface-2); border-radius: 14px; }
+
+  /* ---------- Typography ---------- */
+  .page-title { font-size: 28px; line-height: 1.15; font-weight: 800; letter-spacing: -.025em; }
+  @media (min-width: 1024px) { .page-title { font-size: 32px; } }
+  .section-title { font-size: 17px; font-weight: 700; letter-spacing: -.01em; }
+  .label { display: block; font-size: 13px; font-weight: 600; margin: 0 0 6px 2px; color: var(--text); }
+  .hint { font-size: 12px; color: var(--muted); margin: 6px 0 0 2px; }
+  .caption { font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+
+  /* ---------- Buttons ---------- */
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 44px; padding: 0 18px;
+         border-radius: 14px; font-weight: 600; font-size: 14px; transition: background .15s, transform .08s, opacity .15s;
+         white-space: nowrap; cursor: pointer; user-select: none; border: 0; }
+  .btn:active { transform: scale(.97); }
+  .btn:disabled { opacity: .45; cursor: not-allowed; transform: none; }
+  .btn-sm { height: 36px; padding: 0 12px; border-radius: 12px; font-size: 13px; }
+  .btn-lg { height: 52px; padding: 0 22px; border-radius: 16px; font-size: 15px; }
+  .btn-primary { background: var(--primary); color: var(--on-primary); }
+  .btn-primary:hover:not(:disabled) { background: var(--primary-hover); }
+  .btn-secondary { background: var(--surface-2); color: var(--text); box-shadow: inset 0 0 0 1px var(--border-strong); }
+  .btn-secondary:hover:not(:disabled) { background: var(--surface-3); }
+  .btn-danger { background: var(--danger); color: #fff; }
+  [data-theme="dark"] .btn-danger { color: #450a0a; }
+  .btn-danger:hover:not(:disabled) { background: var(--danger-hover); }
+  .btn-success { background: var(--success); color: #fff; }
+  [data-theme="dark"] .btn-success { color: #052e16; }
+  .btn-ghost { background: transparent; color: var(--muted); }
+  .btn-ghost:hover { background: var(--surface-2); color: var(--text); }
+  .icon-btn { width: 36px; height: 36px; padding: 0; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center;
+              background: var(--surface-2); color: var(--text); transition: background .15s, transform .08s; flex-shrink: 0; }
+  .icon-btn:hover { background: var(--surface-3); }
+  .icon-btn:active { transform: scale(.92); }
+  .icon-btn.tone-danger { background: var(--danger-soft); color: var(--on-danger-soft); }
+  .icon-btn.tone-success { background: var(--success-soft); color: var(--on-success-soft); }
+  .icon-btn.tone-primary { background: var(--primary-soft); color: var(--on-primary-soft); }
+  .kbd { font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 6px; border: 1px solid var(--border-strong); color: var(--muted); }
+
+  /* ---------- Inputs ---------- */
+  .input { width: 100%; height: 46px; padding: 0 14px; border-radius: 14px; background: var(--surface-2); color: var(--text);
+           border: 1.5px solid transparent; font-size: 15px; transition: border-color .15s, background .15s, box-shadow .15s; }
+  textarea.input { height: auto; padding: 12px 14px; min-height: 84px; }
+  .input::placeholder { color: var(--subtle); }
+  .input:focus { outline: none; background: var(--surface); border-color: var(--primary); box-shadow: 0 0 0 4px var(--ring); }
+  select.input { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2371717a' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+                 background-repeat: no-repeat; background-position: right 14px center; padding-right: 40px; }
+  .input-icon { position: relative; }
+  .input-icon > svg { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: var(--subtle); pointer-events: none; }
+  .input-icon > .input { padding-left: 42px; }
+  .search .input { background: var(--surface); box-shadow: var(--shadow); }
+  .input-lg { height: 56px; font-size: 22px; font-weight: 700; }
+
+  /* ---------- Segmented control & chips ---------- */
+  .seg { display: inline-flex; padding: 3px; gap: 3px; border-radius: 14px; background: var(--surface-3); }
+  [data-theme="dark"] .seg { background: var(--surface); box-shadow: 0 0 0 1px var(--border); }
+  .seg > button, .seg > label { height: 34px; padding: 0 14px; border-radius: 11px; font-size: 13px; font-weight: 500; color: var(--muted);
+                 display: inline-flex; align-items: center; justify-content: center; gap: 6px; cursor: pointer; transition: background .15s, color .15s; flex: 1; white-space: nowrap; }
+  .seg > button[aria-pressed="true"], .seg > label:has(input:checked) { background: var(--surface); color: var(--text); font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+  [data-theme="dark"] .seg > button[aria-pressed="true"], [data-theme="dark"] .seg > label:has(input:checked) { background: var(--surface-2); }
+  .seg input { position: absolute; opacity: 0; pointer-events: none; }
+  .chip { height: 36px; padding: 0 14px; border-radius: 999px; font-size: 13px; font-weight: 600; display: inline-flex; align-items: center; gap: 6px;
+          background: var(--surface); color: var(--text); border: 1px solid var(--border); white-space: nowrap; cursor: pointer; transition: all .15s; }
+  .chip:hover { border-color: var(--border-strong); }
+  .chip[aria-pressed="true"] { background: var(--text); color: var(--surface); border-color: var(--text); }
+  .chip .count { font-weight: 500; opacity: .7; }
+  .scroll-x { overflow-x: auto; scrollbar-width: none; }
+  .scroll-x::-webkit-scrollbar { display: none; }
+
+  /* ---------- Badges, avatars, tiles ---------- */
+  .badge { display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 10px; border-radius: 999px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+  .tone-success.badge, .bg-tone-success { background: var(--success-soft); color: var(--on-success-soft); }
+  .tone-warning.badge, .bg-tone-warning { background: var(--warning-soft); color: var(--on-warning-soft); }
+  .tone-danger.badge, .bg-tone-danger { background: var(--danger-soft); color: var(--on-danger-soft); }
+  .tone-info.badge, .bg-tone-info { background: var(--info-soft); color: var(--on-info-soft); }
+  .tone-primary.badge, .bg-tone-primary { background: var(--primary-soft); color: var(--on-primary-soft); }
+  .tone-neutral.badge, .bg-tone-neutral { background: var(--surface-2); color: var(--muted); }
+  .text-success { color: var(--success); } .text-danger { color: var(--danger); } .text-warning { color: var(--warning); } .text-primary { color: var(--primary); }
+  .avatar { width: 40px; height: 40px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px; flex-shrink: 0; }
+  .tile { width: 40px; height: 40px; border-radius: 12px; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
+
+  /* ---------- Tables ---------- */
+  .table { width: 100%; font-size: 14px; border-collapse: separate; border-spacing: 0; }
+  .table th { text-align: left; font-size: 12px; font-weight: 600; color: var(--muted); padding: 12px 16px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  .table td { padding: 14px 16px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  .table tr:last-child td { border-bottom: 0; }
+  .table tbody tr { transition: background .1s; }
+  .table tbody tr:hover { background: var(--surface-2); }
+  .table tbody tr.clickable { cursor: pointer; }
+  .num, .table th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .table th.text-right { text-align: right; }
+  /* Phones: rows reflow into stacked cards so key figures and actions never scroll off-screen. */
+  @media (max-width: 767px) {
+    .table .opt, .table thead { display: none; }
+    .table tbody tr:not(.no-match):not(.empty-row):not(.hidden) { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 14px 16px; border-bottom: 1px solid var(--border); }
+    .table tbody tr:last-child { border-bottom: 0; }
+    .table tbody td { padding: 0; border: 0; }
+    .table tbody td:first-child { flex: 1 1 55%; min-width: 0; }
+    .table tbody td.num { margin-left: auto; }
+    .table tbody td.actions { flex-basis: 100%; }
+  }
+
+  /* ---------- Navigation ---------- */
+  .sidebar { background: var(--surface); border-right: 1px solid var(--border); }
+  .nav-group { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--subtle); padding: 18px 12px 6px; }
+  .nav-link { display: flex; align-items: center; gap: 12px; height: 42px; padding: 0 12px; border-radius: 12px; font-size: 14px; font-weight: 500; color: var(--muted); transition: background .12s, color .12s; }
+  .nav-link:hover { background: var(--surface-2); color: var(--text); }
+  .nav-link[aria-current="page"] { background: var(--primary-soft); color: var(--on-primary-soft); font-weight: 600; }
+  .nav-link .pill { margin-left: auto; font-size: 11px; font-weight: 700; min-width: 22px; height: 20px; padding: 0 6px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; }
+
+  /* ---------- Overlays ---------- */
+  .modal { position: fixed; inset: 0; z-index: 60; display: none; align-items: flex-end; justify-content: center; padding: 0; background: rgba(9, 9, 11, .55); backdrop-filter: blur(4px); }
+  .modal.open { display: flex; animation: fade .15s ease-out; }
+  .modal-panel { background: var(--surface); width: 100%; max-height: 92vh; overflow-y: auto; border-radius: 24px 24px 0 0; box-shadow: var(--shadow-lg); animation: rise .2s cubic-bezier(.2,.9,.3,1.1); }
+  @media (min-width: 640px) { .modal { align-items: center; padding: 24px; } .modal-panel { border-radius: 24px; max-width: 520px; } }
+  .modal-panel.wide { max-width: 640px; }
+  @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes rise { from { transform: translateY(24px); opacity: .6; } to { transform: none; opacity: 1; } }
+  .toast { position: fixed; top: 20px; right: 20px; left: 20px; z-index: 80; display: flex; justify-content: flex-end; pointer-events: none; }
+  .toast > div { pointer-events: auto; max-width: 420px; animation: rise .25s ease-out; }
+
+  /* ---------- Chart ---------- */
+  .bars { display: flex; align-items: flex-end; gap: 6px; height: 160px; }
+  .bar { width: 100%; border-radius: 8px 8px 4px 4px; background: var(--bar); min-height: 4px; position: relative; transition: background .15s; }
+  .bar.today { background: var(--primary); }
+  .bar:hover { background: var(--primary); }
+  .kpi { font-size: clamp(18px, calc(1.9vw + 8px), 30px); line-height: 1.15; font-weight: 800; letter-spacing: -.02em; white-space: nowrap; font-variant-numeric: tabular-nums; margin-top: 12px; }
+  .bar-wrap { flex: 1; display: flex; flex-direction: column; align-items: stretch; justify-content: flex-end; height: 100%; }
+
+  /* ---------- POS ---------- */
+  .product-tile { text-align: left; padding: 14px; border-radius: 18px; background: var(--surface); box-shadow: var(--shadow); transition: transform .08s, box-shadow .15s; position: relative; }
+  .product-tile:hover { box-shadow: 0 0 0 2px var(--primary); }
+  .product-tile:active { transform: scale(.97); }
+  .product-tile.in-cart { box-shadow: 0 0 0 2px var(--primary); }
+  .product-tile[disabled] { opacity: .5; }
+  .stepper { display: inline-flex; align-items: center; background: var(--surface-2); border-radius: 12px; padding: 3px; }
+  .stepper button { width: 30px; height: 30px; border-radius: 9px; display: inline-flex; align-items: center; justify-content: center; }
+  .stepper button:hover { background: var(--surface); }
+  .stepper input { width: 46px; text-align: center; background: transparent; font-weight: 600; font-variant-numeric: tabular-nums; border: 0; }
+  .stepper input:focus { outline: none; }
+
+  @media print {
+    body * { visibility: hidden; }
+    #receiptModal, #receiptModal * { visibility: visible; }
+    #receiptModal { position: absolute; inset: 0; background: #fff; display: block !important; backdrop-filter: none; }
+    #receiptModal .modal-panel { box-shadow: none; max-height: none; border-radius: 0; color: #000; background: #fff; }
+    .no-print { display: none !important; }
+  }
+</style>
+<?php }
 
 // ----------------------------------------------------
 // 1. DYNAMIC CONFIGURATION (Auto-detected from sync.php / config.php)
@@ -113,7 +452,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_db_config'])) {
 
     @file_put_contents($configFile, $configContent, LOCK_EX);
     @chmod($configFile, 0600);
-    header("Location: index.php?msg=" . urlencode("Database configuration saved successfully!"));
+    header("Location: index.php?msg=" . urlencode("Database connected. Sign in with your secret key."));
     exit;
 }
 
@@ -137,12 +476,12 @@ if (!empty($DB_NAME) && !empty($DB_USER)) {
             CREATE TABLE IF NOT EXISTS products (
                 id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
                 name VARCHAR(255) NOT NULL,
-                category VARCHAR(100) DEFAULT 'OTHER',
+                category VARCHAR(100) DEFAULT 'GENERAL',
                 price DECIMAL(12,2) DEFAULT 0.00,
                 unitPrice DECIMAL(12,2) DEFAULT 0.00,
                 costPrice DECIMAL(12,2) DEFAULT 0.00,
                 stockQuantity DECIMAL(12,2) DEFAULT 0.00,
-                unit VARCHAR(50) DEFAULT 'unit',
+                unit VARCHAR(50) DEFAULT 'Piece',
                 minStockThreshold DECIMAL(12,2) DEFAULT 5.00,
                 description TEXT NULL,
                 imageUri VARCHAR(512) DEFAULT '',
@@ -205,18 +544,18 @@ if (!empty($DB_NAME) && !empty($DB_USER)) {
                 changeType VARCHAR(50) NOT NULL,
                 quantityChanged DECIMAL(12,2) NOT NULL DEFAULT 0.00,
                 quantityAfter DECIMAL(12,2) NOT NULL DEFAULT 0.00,
-                unit VARCHAR(50) DEFAULT 'unit',
+                unit VARCHAR(50) DEFAULT 'Piece',
                 notes TEXT NULL,
                 timestamp BIGINT NOT NULL DEFAULT 0
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
             CREATE TABLE IF NOT EXISTS app_settings (
                 id INT PRIMARY KEY DEFAULT 1,
-                businessName VARCHAR(255) DEFAULT 'Naadriel Enterprise',
-                businessTagline VARCHAR(255) DEFAULT 'Chicken at its best',
-                businessPhone VARCHAR(64) DEFAULT '024 000 0000',
-                businessLocation VARCHAR(255) DEFAULT 'Ghana',
-                momoPaymentDetails VARCHAR(255) DEFAULT 'MTN MoMo: 0244XXXXXX (Naadriel Enterprise)',
+                businessName VARCHAR(255) DEFAULT 'My Business',
+                businessTagline VARCHAR(255) DEFAULT 'Quality products & reliable service',
+                businessPhone VARCHAR(64) DEFAULT '',
+                businessLocation VARCHAR(255) DEFAULT '',
+                momoPaymentDetails VARCHAR(255) DEFAULT '',
                 currencySymbol VARCHAR(20) DEFAULT 'GH₵'
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
         ");
@@ -251,8 +590,9 @@ if (!empty($DB_NAME) && !empty($DB_USER)) {
         $addColumnIfMissing($db, 'products', 'price', "DECIMAL(12,2) NOT NULL DEFAULT 0.00");
         $addColumnIfMissing($db, 'products', 'costPrice', "DECIMAL(12,2) NOT NULL DEFAULT 0.00");
         $addColumnIfMissing($db, 'products', 'minStockThreshold', "DECIMAL(12,2) NOT NULL DEFAULT 5.00");
-        $addColumnIfMissing($db, 'products', 'unit', "VARCHAR(32) NOT NULL DEFAULT 'unit'");
+        $addColumnIfMissing($db, 'products', 'unit', "VARCHAR(32) NOT NULL DEFAULT 'Piece'");
         $addColumnIfMissing($db, 'products', 'lastRestockedAt', "BIGINT NOT NULL DEFAULT 0");
+        $addColumnIfMissing($db, 'products', 'description', "TEXT NULL");
 
         // Guarantee sales order columns
         $addColumnIfMissing($db, 'sales_orders', 'balanceDue', "DECIMAL(12,2) NOT NULL DEFAULT 0.00");
@@ -273,74 +613,71 @@ if (!empty($DB_NAME) && !empty($DB_USER)) {
         }
 
     } catch (PDOException $e) {
-        error_log("BizTrack dashboard DB error: " . $e->getMessage()); $dbError = "Could not connect to the database. Check the credentials.";
+        error_log("BizTrack dashboard DB error: " . $e->getMessage());
+        $dbError = "Could not connect to the database. Check the host, name, user and password.";
     }
 } else {
-    $dbError = "Database credentials are not yet configured.";
+    $dbError = null; // first run: nothing configured yet, not an error
 }
 
 // ----------------------------------------------------
 // 3. SHOW SETUP SCREEN IF DATABASE NOT CONNECTED
 // ----------------------------------------------------
 if (!$db) {
+    $setupErr = $_GET['err'] ?? '';
     ?>
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Database Setup - BizTrack Web POS</title>
-        <script src="https://cdn.tailwindcss.com"></script>
-        <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
-        <style>body { font-family: 'Plus Jakarta Sans', sans-serif; }</style>
-    </head>
-    <body class="bg-slate-950 text-slate-100 min-h-screen flex items-center justify-center p-4">
-        <div class="max-w-xl w-full bg-slate-900 border border-slate-800 rounded-3xl shadow-2xl p-8 space-y-6">
-            <div class="text-center">
-                <div class="w-16 h-16 bg-amber-500/20 text-amber-400 rounded-2xl mx-auto flex items-center justify-center text-3xl mb-3">
-                    ⚙️
-                </div>
-                <h1 class="text-2xl font-black text-white">BizTrack Web Setup</h1>
-                <p class="text-slate-400 text-sm mt-1">Configure your MySQL database connection to get started</p>
-            </div>
+<!DOCTYPE html>
+<html lang="en">
+<head><?php renderHead('Set up · BizTrack'); ?></head>
+<body class="min-h-screen flex items-center justify-center p-4">
+    <main class="w-full max-w-lg">
+        <div class="text-center mb-8">
+            <div class="tile bg-tone-primary mx-auto mb-4" style="width:56px;height:56px;border-radius:18px"><?= icon('database', 'ic-lg') ?></div>
+            <h1 class="page-title">Connect your database</h1>
+            <p class="muted mt-2">One-time setup. Use the MySQL details from your hosting control panel.</p>
+        </div>
 
-            <?php if (!empty($dbError)): ?>
-                <div class="p-4 bg-rose-500/10 border border-rose-500/30 rounded-2xl text-rose-300 text-xs leading-relaxed">
-                    <strong class="font-bold text-rose-400 block mb-1">Database Connection Status:</strong>
-                    <?= htmlspecialchars($dbError) ?>
+        <div class="card card-pad">
+            <?php if (!empty($dbError) || $setupErr !== ''): ?>
+                <div class="soft bg-tone-danger p-3 mb-5 flex gap-3 text-sm" role="alert">
+                    <?= icon('alert', 'ic-sm mt-0.5') ?>
+                    <span><?= e($setupErr !== '' ? $setupErr : $dbError) ?></span>
                 </div>
             <?php endif; ?>
 
             <form method="POST" action="index.php" class="space-y-4">
-                <input type="hidden" name="csrf" value="<?= htmlspecialchars($_SESSION['csrf'] ?? '') ?>">
+                <?= csrfField() ?>
                 <input type="hidden" name="save_db_config" value="1">
-                <div>
-                    <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Database Host</label>
-                    <input type="text" name="db_host" value="<?= htmlspecialchars($DB_HOST ?: 'localhost') ?>" required class="w-full px-4 py-3 bg-slate-950 border border-slate-800 rounded-xl text-white">
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                        <label class="label" for="db_host">Host</label>
+                        <input class="input" type="text" id="db_host" name="db_host" value="<?= e($DB_HOST ?: 'localhost') ?>" required>
+                    </div>
+                    <div>
+                        <label class="label" for="db_name">Database name</label>
+                        <input class="input" type="text" id="db_name" name="db_name" value="<?= e($DB_NAME) ?>" required placeholder="cpaneluser_biztrack">
+                    </div>
+                    <div>
+                        <label class="label" for="db_user">Database user</label>
+                        <input class="input" type="text" id="db_user" name="db_user" value="<?= e($DB_USER) ?>" required placeholder="cpaneluser_admin" autocomplete="username">
+                    </div>
+                    <div>
+                        <label class="label" for="db_pass">Password</label>
+                        <input class="input" type="password" id="db_pass" name="db_pass" value="" autocomplete="current-password">
+                    </div>
                 </div>
                 <div>
-                    <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Database Name</label>
-                    <input type="text" name="db_name" value="<?= htmlspecialchars($DB_NAME) ?>" required placeholder="e.g. rmgroups_farm_db" class="w-full px-4 py-3 bg-slate-950 border border-slate-800 rounded-xl text-white">
+                    <label class="label" for="secret_key">Secret key</label>
+                    <input class="input" type="text" id="secret_key" name="secret_key" value="" minlength="24" required placeholder="At least 24 random characters" autocomplete="off">
+                    <p class="hint">Use the same key in the app (Settings → Backup → Cloud sync). You will also sign in with it.</p>
                 </div>
-                <div>
-                    <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Database User</label>
-                    <input type="text" name="db_user" value="<?= htmlspecialchars($DB_USER) ?>" required placeholder="e.g. rmgroups_farm_user" class="w-full px-4 py-3 bg-slate-950 border border-slate-800 rounded-xl text-white">
-                </div>
-                <div>
-                    <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Database Password</label>
-                    <input type="password" name="db_pass" value="" placeholder="Enter MySQL Password" class="w-full px-4 py-3 bg-slate-950 border border-slate-800 rounded-xl text-white">
-                </div>
-                <div>
-                    <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Secret Key (Matches Mobile App Settings)</label>
-                    <input type="text" name="secret_key" value="" minlength="24" placeholder="At least 24 random characters" required class="w-full px-4 py-3 bg-slate-950 border border-slate-800 rounded-xl text-white">
-                </div>
-                <button type="submit" class="w-full py-4 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl shadow-lg shadow-emerald-900/40 transition-all">
-                    Connect & Open Dashboard
-                </button>
+                <button type="submit" class="btn btn-primary btn-lg w-full">Connect &amp; continue <?= icon('arrowRight', 'ic-sm') ?></button>
             </form>
         </div>
-    </body>
-    </html>
+        <p class="text-center text-xs subtle mt-6 flex items-center justify-center gap-1.5"><?= icon('lock', 'ic-sm') ?> Details are stored in config.php on your server only.</p>
+    </main>
+</body>
+</html>
     <?php
     exit;
 }
@@ -362,7 +699,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['auth_action']) && $_P
     if ($lockedUntil > time()) {
         $loginError = "Too many failed attempts. Try again in " . ($lockedUntil - time()) . " seconds.";
     } elseif ($secretIsWeak) {
-        $loginError = "Server secret key is missing or too weak. Set a 24+ character key in config.php.";
+        $loginError = "The server's secret key is missing or too short. Set a key of 24+ characters in config.php.";
     } elseif (hash_equals((string)$SECRET_KEY, $enteredKey)) {
         session_regenerate_id(true);
         $_SESSION['csrf'] = bin2hex(random_bytes(32));
@@ -377,60 +714,57 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['auth_action']) && $_P
             $_SESSION['login_fails'] = 0;
         }
         sleep(1);
-        $loginError = "Invalid Secret Key. Please check the key in your Android App Settings.";
+        $loginError = "That key didn't match. Copy it from the app: Settings → Backup → Cloud sync.";
     }
 }
 
 $isLoggedIn = !empty($_SESSION['naadriel_auth']);
 
 if (!$isLoggedIn) {
-    // Show Login Screen
+    $bizName = 'BizTrack';
+    try {
+        $bizName = (string)($db->query("SELECT businessName FROM app_settings WHERE id = 1")->fetchColumn() ?: 'BizTrack');
+    } catch (Exception $ex) { /* settings table may be empty */ }
+    $loginMsg = $_GET['msg'] ?? '';
     ?>
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Login - BizTrack Web Dashboard</title>
-        <script src="https://cdn.tailwindcss.com"></script>
-        <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
-        <style>body { font-family: 'Plus Jakarta Sans', sans-serif; }</style>
-    </head>
-    <body class="bg-slate-950 min-h-screen flex items-center justify-center p-4">
-        <div class="max-w-md w-full bg-slate-900 border border-slate-800 rounded-3xl shadow-2xl p-8">
-            <div class="text-center mb-8">
-                <div class="inline-flex items-center justify-center w-16 h-16 bg-emerald-600/20 text-emerald-400 rounded-2xl mb-4 text-3xl shadow-lg shadow-emerald-900/30">
-                    🐔
-                </div>
-                <h1 class="text-2xl font-extrabold text-white tracking-tight">BizTrack Business POS</h1>
-                <p class="text-slate-400 text-sm mt-1">Web Management & Real-time Cloud POS</p>
-            </div>
+<!DOCTYPE html>
+<html lang="en">
+<head><?php renderHead('Sign in · ' . $bizName); ?></head>
+<body class="min-h-screen flex items-center justify-center p-4">
+    <main class="w-full max-w-sm">
+        <div class="text-center mb-8">
+            <div class="avatar bg-tone-<?= avatarTone($bizName) ?> mx-auto mb-4" style="width:64px;height:64px;font-size:22px"><?= e(initials($bizName)) ?></div>
+            <h1 class="page-title"><?= e($bizName) ?></h1>
+            <p class="muted mt-2">Sign in to your business dashboard</p>
+        </div>
 
-            <?php if (!empty($loginError)): ?>
-                <div class="mb-6 p-4 bg-rose-500/10 border border-rose-500/30 rounded-2xl text-rose-400 text-xs flex items-center gap-3">
-                    <svg class="w-5 h-5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/></svg>
-                    <span><?= htmlspecialchars($loginError) ?></span>
-                </div>
+        <div class="card card-pad">
+            <?php if ($loginMsg !== ''): ?>
+                <div class="soft bg-tone-success p-3 mb-5 flex gap-3 text-sm" role="status"><?= icon('checkCircle', 'ic-sm mt-0.5') ?><span><?= e($loginMsg) ?></span></div>
             <?php endif; ?>
-
-            <form method="POST" action="index.php" class="space-y-5">
-                <input type="hidden" name="csrf" value="<?= htmlspecialchars($_SESSION['csrf'] ?? '') ?>">
+            <?php if ($loginError !== ''): ?>
+                <div class="soft bg-tone-danger p-3 mb-5 flex gap-3 text-sm" role="alert"><?= icon('alert', 'ic-sm mt-0.5') ?><span><?= e($loginError) ?></span></div>
+            <?php endif; ?>
+            <form method="POST" action="index.php" class="space-y-4">
+                <?= csrfField() ?>
                 <input type="hidden" name="auth_action" value="login">
                 <div>
-                    <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-2">Cloud Secret Key</label>
-                    <input type="password" name="secret_key" required placeholder="Enter your Secret Key" class="w-full px-4 py-3.5 bg-slate-950 border border-slate-800 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-all">
+                    <label class="label" for="login_key">Secret key</label>
+                    <div class="input-icon">
+                        <?= icon('lock', 'ic-sm') ?>
+                        <input class="input" type="password" id="login_key" name="secret_key" required autofocus autocomplete="current-password" placeholder="Paste your secret key">
+                    </div>
                 </div>
-                <button type="submit" class="w-full py-4 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl shadow-lg shadow-emerald-900/40 transition-all">
-                    Access Web Dashboard
-                </button>
+                <button type="submit" class="btn btn-primary btn-lg w-full">Sign in</button>
             </form>
-            <div class="mt-8 pt-6 border-t border-slate-800/80 flex items-center justify-between text-xs text-slate-500">
-                <span>Database: <?= htmlspecialchars($DB_NAME) ?></span>
-                <span class="text-emerald-400 font-medium">● Connected</span>
-            </div>
         </div>
-    </body>
-    </html>
+        <p class="text-center text-xs subtle mt-6 flex items-center justify-center gap-1.5">
+            <span class="inline-block w-2 h-2 rounded-full" style="background:var(--success)"></span>
+            Connected to <?= e($DB_NAME) ?>
+        </p>
+    </main>
+</body>
+</html>
     <?php
     exit;
 }
@@ -444,89 +778,98 @@ $error = $_GET['err'] ?? '';
 // Load App Settings
 $stmt = $db->query("SELECT * FROM app_settings WHERE id = 1 LIMIT 1");
 $settings = $stmt->fetch() ?: [
-    'businessName' => 'BizTrack Business',
+    'businessName' => 'My Business',
     'businessTagline' => 'Quality products & reliable service',
-    'businessPhone' => '024 000 0000',
-    'businessLocation' => 'Ghana',
-    'momoPaymentDetails' => 'MTN MoMo: 0244XXXXXX (BizTrack)',
+    'businessPhone' => '',
+    'businessLocation' => '',
+    'momoPaymentDetails' => '',
     'currencySymbol' => 'GH₵'
 ];
 $currency = $settings['currencySymbol'] ?: 'GH₵';
+
+$validCategory = function (string $c) use ($CATEGORIES, $LEGACY_CATEGORIES): string {
+    return isset($CATEGORIES[$c]) || isset($LEGACY_CATEGORIES[$c]) ? $c : 'GENERAL';
+};
+$validMethod = function (string $m) use ($PAYMENT_METHODS): string {
+    return isset($PAYMENT_METHODS[$m]) ? $m : 'CASH';
+};
+$redirect = function (string $tab, string $message, bool $isError = false, array $extra = []) {
+    $q = array_merge(['tab' => $tab, $isError ? 'err' : 'msg' => $message], $extra);
+    header('Location: index.php?' . http_build_query($q));
+    exit;
+};
 
 // Handle POST Form Actions
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
 
     // A. PRODUCT CRUD
-    if ($action === 'create_product') {
+    if ($action === 'create_product' || $action === 'update_product') {
+        $id = (int)($_POST['id'] ?? 0);
         $name = trim($_POST['name'] ?? '');
-        $category = $_POST['category'] ?? 'OTHER';
-        $unitPrice = (float)($_POST['unitPrice'] ?? 0.0);
-        $costPrice = (float)($_POST['costPrice'] ?? 0.0);
-        $stockQuantity = (float)($_POST['stockQuantity'] ?? 0.0);
-        $unit = trim($_POST['unit'] ?? 'unit');
-        $minThreshold = (float)($_POST['minStockThreshold'] ?? 5.0);
+        $category = $validCategory((string)($_POST['category'] ?? 'GENERAL'));
+        $unitPrice = max(0.0, (float)($_POST['unitPrice'] ?? 0.0));
+        $costPrice = max(0.0, (float)($_POST['costPrice'] ?? 0.0));
+        $stockQuantity = max(0.0, (float)($_POST['stockQuantity'] ?? 0.0));
+        $unit = trim($_POST['unit'] ?? '') ?: 'Piece';
+        $minThreshold = max(0.0, (float)($_POST['minStockThreshold'] ?? 5.0));
         $description = trim($_POST['description'] ?? '');
 
-        if (!empty($name)) {
+        if ($name === '') $redirect('products', 'Give the product a name.', true);
+
+        if ($action === 'create_product') {
             $now = round(microtime(true) * 1000);
             $stmt = $db->prepare("INSERT INTO products (name, category, price, unitPrice, costPrice, stockQuantity, unit, minStockThreshold, description, lastRestockedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
             $stmt->execute([$name, $category, $unitPrice, $unitPrice, $costPrice, $stockQuantity, $unit, $minThreshold, $description, $now]);
             $prodId = $db->lastInsertId();
 
             if ($stockQuantity > 0) {
-                $logStmt = $db->prepare("INSERT INTO inventory_logs (productId, productName, changeType, quantityChanged, quantityAfter, unit, notes, timestamp) VALUES (?, ?, 'RESTOCK', ?, ?, ?, 'Initial stock added via Web', ?)");
+                $logStmt = $db->prepare("INSERT INTO inventory_logs (productId, productName, changeType, quantityChanged, quantityAfter, unit, notes, timestamp) VALUES (?, ?, 'RESTOCK', ?, ?, ?, 'Opening stock (web)', ?)");
                 $logStmt->execute([$prodId, $name, $stockQuantity, $stockQuantity, $unit, $now]);
             }
-            header("Location: index.php?tab=products&msg=" . urlencode("Product '$name' added successfully!"));
-            exit;
+            $redirect('products', "Added \"$name\".");
         }
-    }
-
-    if ($action === 'update_product') {
-        $id = (int)$_POST['id'];
-        $name = trim($_POST['name'] ?? '');
-        $category = $_POST['category'] ?? 'OTHER';
-        $unitPrice = (float)($_POST['unitPrice'] ?? 0.0);
-        $costPrice = (float)($_POST['costPrice'] ?? 0.0);
-        $stockQuantity = (float)($_POST['stockQuantity'] ?? 0.0);
-        $unit = trim($_POST['unit'] ?? 'unit');
-        $minThreshold = (float)($_POST['minStockThreshold'] ?? 5.0);
-        $description = trim($_POST['description'] ?? '');
 
         $stmt = $db->prepare("UPDATE products SET name = ?, category = ?, price = ?, unitPrice = ?, costPrice = ?, stockQuantity = ?, unit = ?, minStockThreshold = ?, description = ? WHERE id = ?");
         $stmt->execute([$name, $category, $unitPrice, $unitPrice, $costPrice, $stockQuantity, $unit, $minThreshold, $description, $id]);
-        header("Location: index.php?tab=products&msg=" . urlencode("Product updated successfully!"));
-        exit;
+        $redirect('products', "Saved changes to \"$name\".");
     }
 
     if ($action === 'restock_product') {
         $id = (int)$_POST['id'];
-        $addQty = (float)$_POST['add_quantity'];
-        $notes = trim($_POST['notes'] ?? 'Restocked via Web Dashboard');
+        $qty = (float)($_POST['add_quantity'] ?? 0);
+        $direction = ($_POST['direction'] ?? 'add') === 'remove' ? -1 : 1;
+        $notes = trim($_POST['notes'] ?? '');
 
         $pStmt = $db->prepare("SELECT name, stockQuantity, unit FROM products WHERE id = ?");
         $pStmt->execute([$id]);
         $prod = $pStmt->fetch();
 
-        if ($prod && $addQty > 0) {
-            $newQty = (float)$prod['stockQuantity'] + $addQty;
+        if ($prod && $qty > 0) {
+            $change = $direction * $qty;
+            $newQty = max(0.0, (float)$prod['stockQuantity'] + $change);
             $now = round(microtime(true) * 1000);
+            $type = $direction > 0 ? 'RESTOCK' : 'CORRECTION';
+            if ($notes === '') $notes = $direction > 0 ? 'Restocked (web)' : 'Stock removed (web)';
 
-            $db->prepare("UPDATE products SET stockQuantity = ?, lastRestockedAt = ? WHERE id = ?")->execute([$newQty, $now, $id]);
-            $db->prepare("INSERT INTO inventory_logs (productId, productName, changeType, quantityChanged, quantityAfter, unit, notes, timestamp) VALUES (?, ?, 'RESTOCK', ?, ?, ?, ?, ?)")
-               ->execute([$id, $prod['name'], $addQty, $newQty, $prod['unit'], $notes, $now]);
+            if ($direction > 0) {
+                $db->prepare("UPDATE products SET stockQuantity = ?, lastRestockedAt = ? WHERE id = ?")->execute([$newQty, $now, $id]);
+            } else {
+                $db->prepare("UPDATE products SET stockQuantity = ? WHERE id = ?")->execute([$newQty, $id]);
+            }
+            $db->prepare("INSERT INTO inventory_logs (productId, productName, changeType, quantityChanged, quantityAfter, unit, notes, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+               ->execute([$id, $prod['name'], $type, $change, $newQty, $prod['unit'], $notes, $now]);
 
-            header("Location: index.php?tab=products&msg=" . urlencode("Restocked {$addQty} {$prod['unit']} of {$prod['name']}!"));
-            exit;
+            $verb = $direction > 0 ? 'Added' : 'Removed';
+            $redirect('products', "$verb " . fmtQty($qty) . " {$prod['unit']} · {$prod['name']} now has " . fmtQty($newQty) . ".");
         }
+        $redirect('products', 'Enter a quantity greater than zero.', true);
     }
 
     if ($action === 'delete_product') {
         $id = (int)$_POST['id'];
         $db->prepare("DELETE FROM products WHERE id = ?")->execute([$id]);
-        header("Location: index.php?tab=products&msg=" . urlencode("Product removed!"));
-        exit;
+        $redirect('products', 'Product deleted. Past sales keep their records.');
     }
 
     // B. CUSTOMER CRUD
@@ -536,15 +879,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $whatsapp = trim($_POST['whatsapp'] ?? '');
         $address = trim($_POST['address'] ?? '');
         $notes = trim($_POST['notes'] ?? '');
-        $initialDebt = (float)($_POST['initial_debt'] ?? 0.0);
+        $initialDebt = max(0.0, (float)($_POST['initial_debt'] ?? 0.0));
 
-        if (!empty($name)) {
-            $now = round(microtime(true) * 1000);
-            $stmt = $db->prepare("INSERT INTO customers (name, phone, whatsapp, address, notes, totalDebt, currentBalance, totalPurchases, totalPaid, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-            $stmt->execute([$name, $phone, $whatsapp, $address, $notes, $initialDebt, $initialDebt, $initialDebt, 0.0, $now]);
-            header("Location: index.php?tab=customers&msg=" . urlencode("Customer '$name' added successfully!"));
-            exit;
-        }
+        if ($name === '') $redirect('customers', 'Give the customer a name.', true);
+        $now = round(microtime(true) * 1000);
+        $stmt = $db->prepare("INSERT INTO customers (name, phone, whatsapp, address, notes, totalDebt, currentBalance, totalPurchases, totalPaid, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+        $stmt->execute([$name, $phone, $whatsapp, $address, $notes, $initialDebt, $initialDebt, $initialDebt, 0.0, $now]);
+        $redirect('customers', "Added $name.");
     }
 
     if ($action === 'update_customer') {
@@ -555,28 +896,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $address = trim($_POST['address'] ?? '');
         $notes = trim($_POST['notes'] ?? '');
 
+        if ($name === '') $redirect('customers', 'Give the customer a name.', true);
         $stmt = $db->prepare("UPDATE customers SET name = ?, phone = ?, whatsapp = ?, address = ?, notes = ? WHERE id = ?");
         $stmt->execute([$name, $phone, $whatsapp, $address, $notes, $id]);
-        header("Location: index.php?tab=customers&msg=" . urlencode("Customer updated successfully!"));
-        exit;
+        $redirect('customers', "Saved changes to $name.");
     }
 
     if ($action === 'delete_customer') {
         $id = (int)$_POST['id'];
         $db->prepare("DELETE FROM customers WHERE id = ?")->execute([$id]);
-        header("Location: index.php?tab=customers&msg=" . urlencode("Customer removed!"));
-        exit;
+        $redirect('customers', 'Customer deleted. Their past invoices are kept.');
     }
 
     // C. SALE / POS TRANSACTION
     if ($action === 'create_sale') {
         $customerId = (int)($_POST['customer_id'] ?? 0);
-        $customerName = trim($_POST['customer_name'] ?? 'Walk-in Customer');
+        $customerName = trim($_POST['customer_name'] ?? '') ?: 'Walk-in customer';
         $customerPhone = trim($_POST['customer_phone'] ?? '');
         $customerWhatsapp = trim($_POST['customer_whatsapp'] ?? '');
-        $paymentMethod = $_POST['payment_method'] ?? 'CASH';
-        $discountAmount = (float)($_POST['discount_amount'] ?? 0.0);
-        $amountPaid = (float)($_POST['amount_paid'] ?? 0.0);
+        $paymentMethod = $validMethod((string)($_POST['payment_method'] ?? 'CASH'));
+        $discountAmount = max(0.0, (float)($_POST['discount_amount'] ?? 0.0));
+        $amountPaid = max(0.0, (float)($_POST['amount_paid'] ?? 0.0));
         $notes = trim($_POST['notes'] ?? '');
 
         if ($customerId > 0) {
@@ -587,6 +927,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $customerName = $cust['name'];
                 if (empty($customerPhone)) $customerPhone = $cust['phone'];
                 if (empty($customerWhatsapp)) $customerWhatsapp = $cust['whatsapp'];
+            } else {
+                $customerId = 0;
             }
         }
 
@@ -598,51 +940,58 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $grossTotal = 0.0;
         $now = round(microtime(true) * 1000);
 
-        for ($i = 0; $i < count($itemIds); $i++) {
-            $pId = (int)$itemIds[$i];
-            $qty = (float)$itemQtys[$i];
-            $price = (float)$itemPrices[$i];
+        $db->beginTransaction();
+        try {
+            for ($i = 0; $i < count($itemIds); $i++) {
+                $pId = (int)$itemIds[$i];
+                $qty = (float)($itemQtys[$i] ?? 0);
+                $price = max(0.0, (float)($itemPrices[$i] ?? 0));
 
-            if ($pId > 0 && $qty > 0) {
-                $pStmt = $db->prepare("SELECT name, unit, costPrice, stockQuantity FROM products WHERE id = ?");
-                $pStmt->execute([$pId]);
-                $pRow = $pStmt->fetch();
+                if ($pId > 0 && $qty > 0) {
+                    $pStmt = $db->prepare("SELECT name, category, unit, costPrice, stockQuantity, imageUri FROM products WHERE id = ?");
+                    $pStmt->execute([$pId]);
+                    $pRow = $pStmt->fetch();
 
-                if ($pRow) {
-                    $lineTotal = $qty * $price;
-                    $grossTotal += $lineTotal;
-                    $cartItems[] = [
-                        'productId' => $pId,
-                        'productName' => $pRow['name'],
-                        'unitPrice' => $price,
-                        'costPrice' => (float)$pRow['costPrice'],
-                        'quantity' => $qty,
-                        'unit' => $pRow['unit'],
-                        'lineTotal' => $lineTotal
-                    ];
+                    if ($pRow) {
+                        $lineTotal = $qty * $price;
+                        $grossTotal += $lineTotal;
+                        // Same shape as the app's CartItem (category is required there).
+                        $cartItems[] = [
+                            'productId' => $pId,
+                            'productName' => $pRow['name'],
+                            'category' => (string)($pRow['category'] ?: 'GENERAL'),
+                            'unit' => $pRow['unit'],
+                            'unitPrice' => $price,
+                            'quantity' => $qty,
+                            'lineTotal' => $lineTotal,
+                            'imageUri' => (string)($pRow['imageUri'] ?? ''),
+                            'costPrice' => (float)$pRow['costPrice'],
+                        ];
 
-                    // Deduct stock and log
-                    $newStock = max(0.0, (float)$pRow['stockQuantity'] - $qty);
-                    $db->prepare("UPDATE products SET stockQuantity = ? WHERE id = ?")->execute([$newStock, $pId]);
-                    $db->prepare("INSERT INTO inventory_logs (productId, productName, changeType, quantityChanged, quantityAfter, unit, notes, timestamp) VALUES (?, ?, 'SALE', ?, ?, ?, 'Sold via Web POS', ?)")
-                       ->execute([$pId, $pRow['name'], -$qty, $newStock, $pRow['unit'], $now]);
+                        $newStock = max(0.0, (float)$pRow['stockQuantity'] - $qty);
+                        $db->prepare("UPDATE products SET stockQuantity = ? WHERE id = ?")->execute([$newStock, $pId]);
+                        $db->prepare("INSERT INTO inventory_logs (productId, productName, changeType, quantityChanged, quantityAfter, unit, notes, timestamp) VALUES (?, ?, 'SALE', ?, ?, ?, 'Sold (web)', ?)")
+                           ->execute([$pId, $pRow['name'], -$qty, $newStock, $pRow['unit'], $now]);
+                    }
                 }
             }
-        }
 
-        if (!empty($cartItems)) {
+            if (empty($cartItems)) {
+                $db->rollBack();
+                $redirect('new_sale', 'Add at least one item to the sale.', true);
+            }
+
             $netTotal = max(0.0, $grossTotal - $discountAmount);
+            $amountPaid = min($amountPaid, $netTotal); // change is handed back, not recorded as payment
             $balanceDue = max(0.0, $netTotal - $amountPaid);
-            $paymentStatus = ($balanceDue <= 0.001) ? 'PAID' : (($amountPaid > 0.001) ? 'PARTIAL' : 'CREDIT');
-            $invoiceNum = 'INV-' . date('ymd') . '-' . rand(1000, 9999);
+            $paymentStatus = ($balanceDue <= 0.001) ? 'PAID' : (($amountPaid > 0.001) ? 'PARTIAL' : 'UNPAID');
+            $invoiceNum = 'INV-' . date('ymd') . '-' . random_int(1000, 9999);
             $itemsJson = json_encode($cartItems);
 
-            // Insert Sales Order
             $soStmt = $db->prepare("INSERT INTO sales_orders (invoiceNumber, customerId, customerName, customerPhone, customerWhatsapp, itemsJson, totalAmount, amountPaid, debtAmount, balanceDue, discountAmount, paymentStatus, paymentMethod, notes, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
             $soStmt->execute([$invoiceNum, ($customerId > 0 ? $customerId : null), $customerName, $customerPhone, $customerWhatsapp, $itemsJson, $netTotal, $amountPaid, $balanceDue, $balanceDue, $discountAmount, $paymentStatus, $paymentMethod, $notes, $now]);
             $orderId = $db->lastInsertId();
 
-            // Update customer debt ledger
             if ($customerId > 0) {
                 $db->prepare("UPDATE customers SET totalPurchases = totalPurchases + ?, totalPaid = totalPaid + ?, totalDebt = totalDebt + ?, currentBalance = currentBalance + ?, lastTransactionDate = ? WHERE id = ?")
                    ->execute([$netTotal, $amountPaid, $balanceDue, $balanceDue, $now, $customerId]);
@@ -653,25 +1002,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $balNow = (float)($cBalStmt->fetchColumn() ?: 0.0);
 
                     $db->prepare("INSERT INTO payments (customerId, customerName, saleOrderId, amount, paymentMethod, notes, timestamp, balanceAfterPayment) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-                       ->execute([$customerId, $customerName, $orderId, $amountPaid, $paymentMethod, "Initial payment on #$invoiceNum", $now, $balNow]);
+                       ->execute([$customerId, $customerName, $orderId, $amountPaid, $paymentMethod, "Payment on #$invoiceNum", $now, $balNow]);
                 }
             }
-
-            header("Location: index.php?tab=sales&msg=" . urlencode("Invoice #$invoiceNum created successfully!"));
-            exit;
-        } else {
-            header("Location: index.php?tab=new_sale&err=" . urlencode("Please add at least one product with quantity > 0."));
-            exit;
+            $db->commit();
+        } catch (Exception $ex) {
+            if ($db->inTransaction()) $db->rollBack();
+            error_log('BizTrack sale error: ' . $ex->getMessage());
+            $redirect('new_sale', 'The sale could not be saved. Nothing was charged; please try again.', true);
         }
+
+        $redirect('sales', "Sale #$invoiceNum recorded · " . $currency . ' ' . number_format($netTotal, 2), false, ['open' => $orderId]);
     }
 
     // D. RECORD PAYMENT / DEBT RECOVERY
     if ($action === 'record_payment') {
         $customerId = (int)$_POST['customer_id'];
         $amount = (float)($_POST['amount'] ?? 0.0);
-        $method = $_POST['payment_method'] ?? 'CASH';
-        $notes = trim($_POST['notes'] ?? 'Payment recorded via Web Dashboard');
+        $method = $validMethod((string)($_POST['payment_method'] ?? 'CASH'));
+        $notes = trim($_POST['notes'] ?? '') ?: 'Payment recorded (web)';
         $now = round(microtime(true) * 1000);
+        $back = in_array($_POST['return_tab'] ?? '', ['dashboard', 'customers'], true) ? $_POST['return_tab'] : 'customers';
 
         if ($customerId > 0 && $amount > 0) {
             $cStmt = $db->prepare("SELECT * FROM customers WHERE id = ?");
@@ -680,23 +1031,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             if ($cust) {
                 $curBal = (float)($cust['currentBalance'] ?: $cust['totalDebt'] ?: 0.0);
+                $amount = min($amount, $curBal); // never record more than is owed
+                if ($amount <= 0) $redirect($back, "{$cust['name']} doesn't owe anything.", true);
                 $newBal = max(0.0, $curBal - $amount);
 
-                // Update customer balance
+                $db->beginTransaction();
                 $db->prepare("UPDATE customers SET totalPaid = totalPaid + ?, totalDebt = ?, currentBalance = ?, lastTransactionDate = ? WHERE id = ?")
                    ->execute([$amount, $newBal, $newBal, $now, $customerId]);
 
-                // Insert payment receipt
                 $db->prepare("INSERT INTO payments (customerId, customerName, saleOrderId, amount, paymentMethod, notes, timestamp, balanceAfterPayment) VALUES (?, ?, NULL, ?, ?, ?, ?, ?)")
                    ->execute([$customerId, $cust['name'], $amount, $method, $notes, $now, $newBal]);
 
-                // Reconcile unpaid orders
+                // Apply the payment to the oldest unpaid invoices first.
                 $ordersStmt = $db->prepare("SELECT id, balanceDue, amountPaid FROM sales_orders WHERE customerId = ? AND balanceDue > 0 ORDER BY timestamp ASC");
                 $ordersStmt->execute([$customerId]);
-                $unpaidOrders = $ordersStmt->fetchAll();
-
                 $remainingPayment = $amount;
-                foreach ($unpaidOrders as $ord) {
+                foreach ($ordersStmt->fetchAll() as $ord) {
                     if ($remainingPayment <= 0) break;
                     $ordBal = (float)$ord['balanceDue'];
                     $paidOnThis = min($remainingPayment, $ordBal);
@@ -706,37 +1056,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                     $db->prepare("UPDATE sales_orders SET balanceDue = ?, debtAmount = ?, amountPaid = ?, paymentStatus = ? WHERE id = ?")
                        ->execute([$newOrdBal, $newOrdBal, $newOrdPaid, $newStatus, $ord['id']]);
-
                     $remainingPayment -= $paidOnThis;
                 }
+                $db->commit();
 
-                header("Location: index.php?tab=debtors&msg=" . urlencode("Payment of $currency " . number_format($amount, 2) . " recorded for {$cust['name']}!"));
-                exit;
+                $left = $newBal > 0.009 ? ' · still owes ' . $currency . ' ' . number_format($newBal, 2) : ' · fully settled';
+                $redirect($back, "Received $currency " . number_format($amount, 2) . " from {$cust['name']}$left");
             }
         }
+        $redirect($back, 'Enter an amount greater than zero.', true);
     }
 
     // E. SETTINGS UPDATE
     if ($action === 'update_settings') {
-        $bName = trim($_POST['businessName'] ?? '');
+        $bName = trim($_POST['businessName'] ?? '') ?: 'My Business';
         $bTagline = trim($_POST['businessTagline'] ?? '');
         $bPhone = trim($_POST['businessPhone'] ?? '');
         $bLocation = trim($_POST['businessLocation'] ?? '');
         $mMomo = trim($_POST['momoPaymentDetails'] ?? '');
-        $cSymbol = trim($_POST['currencySymbol'] ?? 'GH₵');
+        $cSymbol = trim($_POST['currencySymbol'] ?? '') ?: 'GH₵';
 
         $stmt = $db->prepare("REPLACE INTO app_settings (id, businessName, businessTagline, businessPhone, businessLocation, momoPaymentDetails, currencySymbol) VALUES (1, ?, ?, ?, ?, ?, ?)");
         $stmt->execute([$bName, $bTagline, $bPhone, $bLocation, $mMomo, $cSymbol]);
-
-        header("Location: index.php?tab=settings&msg=" . urlencode("Farm settings updated successfully!"));
-        exit;
+        $redirect('settings', 'Business details saved.');
     }
 }
 
 // ----------------------------------------------------
-// 6. DASHBOARD & TAB DATA PREPARATION
+// 6. PAGE DATA
 // ----------------------------------------------------
 $tab = $_GET['tab'] ?? 'dashboard';
+if ($tab === 'debtors') { $tab = 'customers'; $_GET['filter'] = 'owing'; } // old links
+$validTabs = ['dashboard', 'new_sale', 'sales', 'products', 'customers', 'payments', 'inventory_logs', 'settings'];
+if (!in_array($tab, $validTabs, true)) $tab = 'dashboard';
 
 $totalSalesSum = (float)($db->query("SELECT SUM(totalAmount) FROM sales_orders")->fetchColumn() ?: 0.0);
 $totalCollectedSum = (float)($db->query("SELECT SUM(amountPaid) FROM sales_orders")->fetchColumn() ?: 0.0);
@@ -747,1109 +1099,1621 @@ $debtorsCount = (int)($db->query("SELECT COUNT(*) FROM customers WHERE COALESCE(
 
 $allProducts = $db->query("SELECT * FROM products ORDER BY name ASC")->fetchAll();
 $allCustomers = $db->query("SELECT * FROM customers ORDER BY name ASC")->fetchAll();
+
+$todayStartMs = strtotime('today') * 1000;
+$nav = [
+    'Overview' => [
+        ['dashboard', 'Dashboard', 'home', null],
+    ],
+    'Sell' => [
+        ['new_sale', 'New sale', 'plus', null],
+        ['sales', 'Sales', 'receipt', null],
+    ],
+    'Manage' => [
+        ['products', 'Products', 'box', $lowStockCount > 0 ? [$lowStockCount, 'warning', 'low on stock'] : null],
+        ['customers', 'Customers', 'users', $debtorsCount > 0 ? [$debtorsCount, 'danger', 'owing'] : null],
+    ],
+    'Records' => [
+        ['payments', 'Payments', 'wallet', null],
+        ['inventory_logs', 'Stock history', 'history', null],
+    ],
+];
+$pageTitles = [
+    'dashboard' => 'Dashboard', 'new_sale' => 'New sale', 'sales' => 'Sales', 'products' => 'Products',
+    'customers' => 'Customers', 'payments' => 'Payments', 'inventory_logs' => 'Stock history', 'settings' => 'Settings',
+];
+
+/** Small helpers for repeated view fragments. */
+function pageHeader(string $title, string $subtitle = '', string $actions = ''): void { ?>
+    <header class="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-6 lg:mb-8">
+        <div>
+            <h1 class="page-title"><?= e($title) ?></h1>
+            <?php if ($subtitle !== ''): ?><p class="muted mt-1.5"><?= e($subtitle) ?></p><?php endif; ?>
+        </div>
+        <?php if ($actions !== ''): ?><div class="flex flex-wrap gap-2"><?= $actions ?></div><?php endif; ?>
+    </header>
+<?php }
+
+function emptyRow(int $cols, string $iconName, string $title, string $text): string {
+    return '<tr class="empty-row"><td colspan="' . $cols . '"><div class="py-14 text-center">'
+        . '<div class="tile bg-tone-neutral mx-auto mb-3" style="width:56px;height:56px;border-radius:999px">' . icon($iconName, 'ic-lg') . '</div>'
+        . '<p class="font-semibold">' . e($title) . '</p><p class="muted text-sm mt-1">' . e($text) . '</p></div></td></tr>';
+}
+
+function noMatchRow(int $cols): string {
+    return '<tr class="no-match hidden"><td colspan="' . $cols . '"><div class="py-12 text-center">'
+        . '<div class="tile bg-tone-neutral mx-auto mb-3" style="width:56px;height:56px;border-radius:999px">' . icon('filterOff', 'ic-lg') . '</div>'
+        . '<p class="font-semibold">Nothing matches</p><p class="muted text-sm mt-1">Try a different search or filter.</p></div></td></tr>';
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title><?= htmlspecialchars($settings['businessName']) ?> - Web Dashboard</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-    <style>
-        body { font-family: 'Plus Jakarta Sans', sans-serif; }
-        .glass-card { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.07); }
-    </style>
-</head>
-<body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col md:flex-row">
+<head><?php renderHead($pageTitles[$tab] . ' · ' . $settings['businessName']); ?></head>
+<body class="min-h-screen">
+<a href="#main" class="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-50 btn btn-primary">Skip to content</a>
 
-    <!-- SIDEBAR NAVIGATION -->
-    <aside class="w-full md:w-64 bg-slate-900 border-r border-slate-800 p-5 flex flex-col justify-between flex-shrink-0">
-        <div>
-            <!-- Farm Branding -->
-            <div class="flex items-center gap-3 mb-8">
-                <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-emerald-600 to-teal-400 flex items-center justify-center text-white font-black text-xl shadow-lg shadow-emerald-900/40">
-                    🐔
-                </div>
-                <div>
-                    <h2 class="font-bold text-base text-white leading-tight"><?= htmlspecialchars($settings['businessName']) ?></h2>
-                    <span class="text-xs text-emerald-400 font-medium">Cloud Web POS</span>
-                </div>
-            </div>
-
-            <!-- Navigation Links -->
-            <nav class="space-y-1.5">
-                <a href="index.php?tab=dashboard" class="flex items-center gap-3 px-4 py-3 rounded-xl font-semibold text-sm transition-all <?= $tab === 'dashboard' ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-900/30' : 'text-slate-400 hover:bg-slate-800 hover:text-white' ?>">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/></svg>
-                    Dashboard
-                </a>
-                <a href="index.php?tab=new_sale" class="flex items-center gap-3 px-4 py-3 rounded-xl font-semibold text-sm transition-all <?= $tab === 'new_sale' ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-900/30' : 'text-slate-400 hover:bg-slate-800 hover:text-white' ?>">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
-                    New Sale (POS)
-                </a>
-                <a href="index.php?tab=sales" class="flex items-center gap-3 px-4 py-3 rounded-xl font-semibold text-sm transition-all <?= $tab === 'sales' ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-900/30' : 'text-slate-400 hover:bg-slate-800 hover:text-white' ?>">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-                    Sales History
-                </a>
-                <a href="index.php?tab=products" class="flex items-center gap-3 px-4 py-3 rounded-xl font-semibold text-sm transition-all <?= $tab === 'products' ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-900/30' : 'text-slate-400 hover:bg-slate-800 hover:text-white' ?>">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
-                    Products & Stock
-                    <?php if ($lowStockCount > 0): ?>
-                        <span class="ml-auto bg-amber-500/20 text-amber-400 text-xs px-2 py-0.5 rounded-full font-bold"><?= $lowStockCount ?></span>
-                    <?php endif; ?>
-                </a>
-                <a href="index.php?tab=customers" class="flex items-center gap-3 px-4 py-3 rounded-xl font-semibold text-sm transition-all <?= $tab === 'customers' ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-900/30' : 'text-slate-400 hover:bg-slate-800 hover:text-white' ?>">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
-                    Customers
-                </a>
-                <a href="index.php?tab=debtors" class="flex items-center gap-3 px-4 py-3 rounded-xl font-semibold text-sm transition-all <?= $tab === 'debtors' ? 'bg-rose-600 text-white shadow-lg shadow-rose-900/30' : 'text-slate-400 hover:bg-slate-800 hover:text-white' ?>">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"/></svg>
-                    Debtors Ledger
-                    <?php if ($debtorsCount > 0): ?>
-                        <span class="ml-auto bg-rose-500/20 text-rose-400 text-xs px-2 py-0.5 rounded-full font-bold"><?= $debtorsCount ?></span>
-                    <?php endif; ?>
-                </a>
-                <a href="index.php?tab=payments" class="flex items-center gap-3 px-4 py-3 rounded-xl font-semibold text-sm transition-all <?= $tab === 'payments' ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-900/30' : 'text-slate-400 hover:bg-slate-800 hover:text-white' ?>">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 8h6m-5 0a3 3 0 110 6H9l3 3m-3-6h6m6 1a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                    Payment Logs
-                </a>
-                <a href="index.php?tab=inventory_logs" class="flex items-center gap-3 px-4 py-3 rounded-xl font-semibold text-sm transition-all <?= $tab === 'inventory_logs' ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-900/30' : 'text-slate-400 hover:bg-slate-800 hover:text-white' ?>">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
-                    Inventory History
-                </a>
-                <a href="index.php?tab=settings" class="flex items-center gap-3 px-4 py-3 rounded-xl font-semibold text-sm transition-all <?= $tab === 'settings' ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-900/30' : 'text-slate-400 hover:bg-slate-800 hover:text-white' ?>">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
-                    Settings & Profile
-                </a>
-            </nav>
+<!-- ===================== SIDEBAR ===================== -->
+<div id="navScrim" class="fixed inset-0 z-40 hidden lg:hidden" style="background:rgba(9,9,11,.5)" onclick="toggleNav(false)"></div>
+<aside id="sidebar" class="sidebar fixed inset-y-0 left-0 z-50 w-72 -translate-x-full lg:translate-x-0 transition-transform duration-200 flex flex-col" aria-label="Main navigation">
+    <div class="flex items-center gap-3 px-5 h-20 flex-shrink-0">
+        <div class="avatar bg-tone-<?= avatarTone($settings['businessName']) ?>" style="border-radius:14px"><?= e(initials($settings['businessName'])) ?></div>
+        <div class="min-w-0">
+            <div class="font-bold truncate"><?= e($settings['businessName']) ?></div>
+            <div class="text-xs muted truncate"><?= e($settings['businessTagline'] ?: 'Business dashboard') ?></div>
         </div>
-
-        <div class="mt-8 pt-6 border-t border-slate-800">
-            <div class="flex items-center justify-between text-xs text-slate-500 mb-3">
-                <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-emerald-400"></span> MySQL Live</span>
-                <span class="truncate max-w-[100px]"><?= htmlspecialchars($DB_NAME) ?></span>
-            </div>
-            <a href="index.php?logout=1" class="flex items-center justify-center gap-2 w-full py-2.5 bg-slate-800 hover:bg-rose-900/30 hover:text-rose-400 text-slate-400 text-sm font-medium rounded-xl transition-all">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>
-                Sign Out
-            </a>
-        </div>
-    </aside>
-
-    <!-- MAIN CONTENT AREA -->
-    <main class="flex-1 p-6 lg:p-10 overflow-y-auto">
-        <!-- Toast Alerts -->
-        <?php if (!empty($msg)): ?>
-            <div class="mb-6 p-4 bg-emerald-500/10 border border-emerald-500/30 rounded-2xl text-emerald-400 text-sm flex items-center justify-between shadow-lg">
-                <div class="flex items-center gap-3">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
-                    <span><?= htmlspecialchars($msg) ?></span>
-                </div>
-                <a href="index.php?tab=<?= htmlspecialchars($tab) ?>" class="text-emerald-400 hover:text-white">&times;</a>
-            </div>
-        <?php endif; ?>
-        <?php if (!empty($error)): ?>
-            <div class="mb-6 p-4 bg-rose-500/10 border border-rose-500/30 rounded-2xl text-rose-400 text-sm flex items-center justify-between shadow-lg">
-                <div class="flex items-center gap-3">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
-                    <span><?= htmlspecialchars($error) ?></span>
-                </div>
-                <a href="index.php?tab=<?= htmlspecialchars($tab) ?>" class="text-rose-400 hover:text-white">&times;</a>
-            </div>
-        <?php endif; ?>
-
-        <?php
-        // ---------------------------------------------------------------------------------
-        // TAB: DASHBOARD
-        // ---------------------------------------------------------------------------------
-        if ($tab === 'dashboard'): 
-            $recentSales = $db->query("SELECT * FROM sales_orders ORDER BY timestamp DESC LIMIT 5")->fetchAll();
-            $topDebtors = $db->query("SELECT * FROM customers WHERE COALESCE(currentBalance, totalDebt, 0) > 0.009 ORDER BY COALESCE(currentBalance, totalDebt, 0) DESC LIMIT 5")->fetchAll();
-        ?>
-            <div class="space-y-8">
-                <div>
-                    <h1 class="text-2xl lg:text-3xl font-extrabold text-white tracking-tight">Overview & Performance</h1>
-                    <p class="text-slate-400 text-sm mt-1">Real-time live metrics synchronized with your mobile farm POS</p>
-                </div>
-
-                <!-- Stats Grid -->
-                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-                    <div class="glass-card p-5 rounded-2xl">
-                        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Total Sales Volume</span>
-                        <div class="text-2xl font-black text-emerald-400 mt-2"><?= $currency ?> <?= number_format($totalSalesSum, 2) ?></div>
-                        <span class="text-xs text-slate-500 mt-1 block">All recorded farm orders</span>
-                    </div>
-                    <div class="glass-card p-5 rounded-2xl">
-                        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Cash / MoMo Collected</span>
-                        <div class="text-2xl font-black text-cyan-400 mt-2"><?= $currency ?> <?= number_format($totalCollectedSum, 2) ?></div>
-                        <span class="text-xs text-slate-500 mt-1 block">Received payments</span>
-                    </div>
-                    <div class="glass-card p-5 rounded-2xl">
-                        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Total Debtors (Owing)</span>
-                        <div class="text-2xl font-black text-rose-400 mt-2"><?= $currency ?> <?= number_format($totalDebtSum, 2) ?></div>
-                        <span class="text-xs text-slate-500 mt-1 block"><?= $debtorsCount ?> customers currently owe</span>
-                    </div>
-                    <div class="glass-card p-5 rounded-2xl">
-                        <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Inventory Items</span>
-                        <div class="text-2xl font-black text-amber-400 mt-2"><?= $totalProductsCount ?> Products</div>
-                        <span class="text-xs text-slate-500 mt-1 block"><?= $lowStockCount ?> items in low stock</span>
-                    </div>
-                </div>
-
-                <!-- Recent Sales & Debtors -->
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <!-- Recent Sales -->
-                    <div class="glass-card p-6 rounded-2xl">
-                        <div class="flex items-center justify-between mb-4">
-                            <h3 class="font-bold text-lg text-white">Recent Sales</h3>
-                            <a href="index.php?tab=sales" class="text-xs font-semibold text-emerald-400 hover:underline">View All &rarr;</a>
-                        </div>
-                        <div class="space-y-3">
-                            <?php if (empty($recentSales)): ?>
-                                <p class="text-sm text-slate-500 py-4 text-center">No sales recorded yet.</p>
-                            <?php else: foreach ($recentSales as $s): ?>
-                                <div class="flex items-center justify-between p-3 bg-slate-900/60 rounded-xl border border-slate-800">
-                                    <div>
-                                        <div class="font-semibold text-sm text-white"><?= htmlspecialchars((string)($s['customerName'] ?? 'Walk-in Customer')) ?></div>
-                                        <div class="text-xs text-slate-500">#<?= htmlspecialchars((string)($s['invoiceNumber'] ?? ('INV-' . ($s['id'] ?? '')))) ?> • <?= date('d M Y, h:i A', (int)round((float)($s['timestamp'] ?? 0) / 1000)) ?></div>
-                                    </div>
-                                    <div class="text-right">
-                                        <div class="font-bold text-sm text-emerald-400"><?= $currency ?> <?= number_format($s['totalAmount'], 2) ?></div>
-                                        <span class="text-[10px] px-2 py-0.5 rounded-full font-bold <?= $s['balanceDue'] > 0 ? 'bg-rose-500/20 text-rose-400' : 'bg-emerald-500/20 text-emerald-400' ?>">
-                                            <?= $s['paymentStatus'] ?>
-                                        </span>
-                                    </div>
-                                </div>
-                            <?php endforeach; endif; ?>
-                        </div>
-                    </div>
-
-                    <!-- Top Debtors -->
-                    <div class="glass-card p-6 rounded-2xl">
-                        <div class="flex items-center justify-between mb-4">
-                            <h3 class="font-bold text-lg text-white">Top Outstanding Debtors</h3>
-                            <a href="index.php?tab=debtors" class="text-xs font-semibold text-rose-400 hover:underline">Manage Debtors &rarr;</a>
-                        </div>
-                        <div class="space-y-3">
-                            <?php if (empty($topDebtors)): ?>
-                                <p class="text-sm text-slate-500 py-4 text-center">🎉 No outstanding debtors! All accounts cleared.</p>
-                            <?php else: foreach ($topDebtors as $d): ?>
-                                <div class="flex items-center justify-between p-3 bg-slate-900/60 rounded-xl border border-slate-800">
-                                    <div>
-                                        <div class="font-semibold text-sm text-white"><?= htmlspecialchars((string)($d['name'] ?? '')) ?></div>
-                                        <div class="text-xs text-slate-500"><?= htmlspecialchars((string)(($d['phone'] ?? '') ?: 'No phone')) ?></div>
-                                    </div>
-                                    <div class="text-right">
-                                        <div class="font-bold text-sm text-rose-400"><?= $currency ?> <?= number_format($d['currentBalance'], 2) ?></div>
-                                        <button onclick="openPaymentModal(<?= $d['id'] ?>, '<?= htmlspecialchars(addslashes($d['name'])) ?>', <?= $d['currentBalance'] ?>)" class="text-[11px] text-emerald-400 font-semibold hover:underline">
-                                            + Record Payment
-                                        </button>
-                                    </div>
-                                </div>
-                            <?php endforeach; endif; ?>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-        <?php
-        // ---------------------------------------------------------------------------------
-        // TAB: NEW SALE (POS)
-        // ---------------------------------------------------------------------------------
-        elseif ($tab === 'new_sale'): ?>
-            <div class="max-w-4xl mx-auto space-y-6">
-                <div>
-                    <h1 class="text-2xl font-extrabold text-white tracking-tight">Record New Sale</h1>
-                    <p class="text-slate-400 text-sm mt-1">Create an invoice, update inventory stock, and track customer debts</p>
-                </div>
-
-                <form method="POST" action="index.php" id="saleForm" class="space-y-6">
-                    <input type="hidden" name="csrf" value="<?= htmlspecialchars($_SESSION['csrf'] ?? '') ?>">
-                    <input type="hidden" name="action" value="create_sale">
-
-                    <!-- Customer Selection -->
-                    <div class="glass-card p-6 rounded-2xl space-y-4">
-                        <h3 class="font-bold text-base text-emerald-400">1. Customer Information</h3>
-                        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-                            <div>
-                                <label class="block text-xs font-semibold text-slate-300 uppercase mb-2">Select Customer</label>
-                                <select name="customer_id" id="pos_customer_select" onchange="handleCustomerSelect(this)" class="w-full px-4 py-3 bg-slate-900 border border-slate-700 rounded-xl text-white focus:ring-2 focus:ring-emerald-500">
-                                    <option value="0" data-phone="" data-whatsapp="">Walk-in / Cash Customer</option>
-                                    <?php foreach ($allCustomers as $c): ?>
-                                        <option value="<?= $c['id'] ?>" data-name="<?= htmlspecialchars($c['name']) ?>" data-phone="<?= htmlspecialchars($c['phone']) ?>" data-whatsapp="<?= htmlspecialchars($c['whatsapp']) ?>" data-balance="<?= $c['currentBalance'] ?>">
-                                            <?= htmlspecialchars($c['name']) ?> <?= $c['currentBalance'] > 0 ? '(Owes ' . $currency . ' ' . number_format($c['currentBalance'], 2) . ')' : '' ?>
-                                        </option>
-                                    <?php endforeach; ?>
-                                </select>
-                            </div>
-                            <div>
-                                <label class="block text-xs font-semibold text-slate-300 uppercase mb-2">Customer Name</label>
-                                <input type="text" name="customer_name" id="pos_cust_name" value="Walk-in Customer" required class="w-full px-4 py-3 bg-slate-900 border border-slate-700 rounded-xl text-white focus:ring-2 focus:ring-emerald-500">
-                            </div>
-                            <div>
-                                <label class="block text-xs font-semibold text-slate-300 uppercase mb-2">Phone Number</label>
-                                <input type="text" name="customer_phone" id="pos_cust_phone" placeholder="024XXXXXXX" class="w-full px-4 py-3 bg-slate-900 border border-slate-700 rounded-xl text-white focus:ring-2 focus:ring-emerald-500">
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Cart Items Selection -->
-                    <div class="glass-card p-6 rounded-2xl space-y-4">
-                        <div class="flex items-center justify-between">
-                            <h3 class="font-bold text-base text-emerald-400">2. Farm Products Cart</h3>
-                            <button type="button" onclick="addSaleRow()" class="px-3 py-1.5 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 text-xs font-bold rounded-lg border border-emerald-500/30">
-                                + Add Product Line
-                            </button>
-                        </div>
-                        <div id="cart_rows_container" class="space-y-3">
-                            <!-- Dynamic Item Rows -->
-                        </div>
-                    </div>
-
-                    <!-- Payment & Totals -->
-                    <div class="glass-card p-6 rounded-2xl space-y-4">
-                        <h3 class="font-bold text-base text-emerald-400">3. Payment & Settlement</h3>
-                        <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
-                            <div>
-                                <label class="block text-xs font-semibold text-slate-300 uppercase mb-2">Discount (<?= $currency ?>)</label>
-                                <input type="number" step="0.01" name="discount_amount" id="pos_discount" value="0.00" oninput="calculateTotals()" class="w-full px-4 py-3 bg-slate-900 border border-slate-700 rounded-xl text-white focus:ring-2 focus:ring-emerald-500">
-                            </div>
-                            <div>
-                                <label class="block text-xs font-semibold text-slate-300 uppercase mb-2">Amount Paid (<?= $currency ?>)</label>
-                                <input type="number" step="0.01" name="amount_paid" id="pos_amount_paid" value="0.00" oninput="calculateTotals()" class="w-full px-4 py-3 bg-slate-900 border border-slate-700 rounded-xl text-white focus:ring-2 focus:ring-emerald-500">
-                            </div>
-                            <div>
-                                <label class="block text-xs font-semibold text-slate-300 uppercase mb-2">Payment Method</label>
-                                <select name="payment_method" class="w-full px-4 py-3 bg-slate-900 border border-slate-700 rounded-xl text-white focus:ring-2 focus:ring-emerald-500">
-                                    <option value="CASH">💵 Cash</option>
-                                    <option value="MOMO">📱 MTN MoMo</option>
-                                    <option value="BANK">🏦 Bank Transfer</option>
-                                    <option value="CREDIT">⏳ Credit / Unpaid</option>
-                                </select>
-                            </div>
-                            <div>
-                                <label class="block text-xs font-semibold text-slate-300 uppercase mb-2">Notes / Memo</label>
-                                <input type="text" name="notes" placeholder="Optional notes" class="w-full px-4 py-3 bg-slate-900 border border-slate-700 rounded-xl text-white focus:ring-2 focus:ring-emerald-500">
-                            </div>
-                        </div>
-
-                        <!-- Live Summary Box -->
-                        <div class="p-4 bg-slate-900/80 rounded-xl border border-slate-800 flex flex-wrap items-center justify-between gap-4 mt-4">
-                            <div>
-                                <span class="text-xs text-slate-400">Total Bill:</span>
-                                <div class="text-xl font-bold text-white"><?= $currency ?> <span id="pos_total_display">0.00</span></div>
-                            </div>
-                            <div>
-                                <span class="text-xs text-slate-400">Amount Paid:</span>
-                                <div class="text-xl font-bold text-emerald-400"><?= $currency ?> <span id="pos_paid_display">0.00</span></div>
-                            </div>
-                            <div>
-                                <span class="text-xs text-slate-400">Balance Due (Credit):</span>
-                                <div class="text-xl font-black text-rose-400"><?= $currency ?> <span id="pos_balance_display">0.00</span></div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <button type="submit" class="w-full py-4 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-lg rounded-2xl shadow-xl shadow-emerald-900/40 transition-all">
-                        Complete & Issue Sale
-                    </button>
-                </form>
-            </div>
-
-            <script>
-                const productsData = <?= json_encode($allProducts) ?>;
-
-                function handleCustomerSelect(el) {
-                    const opt = el.options[el.selectedIndex];
-                    if (el.value !== "0") {
-                        document.getElementById('pos_cust_name').value = opt.getAttribute('data-name') || '';
-                        document.getElementById('pos_cust_phone').value = opt.getAttribute('data-phone') || '';
-                    } else {
-                        document.getElementById('pos_cust_name').value = 'Walk-in Customer';
-                        document.getElementById('pos_cust_phone').value = '';
-                    }
-                }
-
-                function addSaleRow() {
-                    const container = document.getElementById('cart_rows_container');
-                    const row = document.createElement('div');
-                    row.className = 'grid grid-cols-12 gap-3 items-center p-3 bg-slate-900/60 rounded-xl border border-slate-800 cart-row';
-                    
-                    let optionsHtml = '<option value="">-- Choose Product --</option>';
-                    productsData.forEach(p => {
-                        optionsHtml += `<option value="${p.id}" data-price="${p.unitPrice}" data-unit="${p.unit}" data-stock="${p.stockQuantity}">${p.name} (${p.unitPrice} / ${p.unit}) [Stock: ${p.stockQuantity}]</option>`;
-                    });
-
-                    row.innerHTML = `
-                        <div class="col-span-5">
-                            <select name="item_product_id[]" onchange="handleProductChange(this)" required class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-sm text-white focus:ring-2 focus:ring-emerald-500">
-                                ${optionsHtml}
-                            </select>
-                        </div>
-                        <div class="col-span-2">
-                            <input type="number" step="0.1" name="item_quantity[]" value="1" min="0.1" oninput="calculateTotals()" placeholder="Qty" required class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-sm text-white text-center">
-                        </div>
-                        <div class="col-span-2">
-                            <input type="number" step="0.01" name="item_price[]" value="0.00" oninput="calculateTotals()" placeholder="Price" required class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-sm text-white text-right">
-                        </div>
-                        <div class="col-span-2 text-right font-bold text-sm text-emerald-400 line-total">
-                            <?= $currency ?> 0.00
-                        </div>
-                        <div class="col-span-1 text-center">
-                            <button type="button" onclick="this.closest('.cart-row').remove(); calculateTotals();" class="text-rose-400 hover:text-rose-300 font-bold text-lg">&times;</button>
-                        </div>
-                    `;
-                    container.appendChild(row);
-                }
-
-                function handleProductChange(sel) {
-                    const row = sel.closest('.cart-row');
-                    const opt = sel.options[sel.selectedIndex];
-                    const price = parseFloat(opt.getAttribute('data-price') || '0');
-                    row.querySelector('input[name="item_price[]"]').value = price.toFixed(2);
-                    calculateTotals();
-                }
-
-                function calculateTotals() {
-                    let subtotal = 0;
-                    document.querySelectorAll('.cart-row').forEach(row => {
-                        const qty = parseFloat(row.querySelector('input[name="item_quantity[]"]').value) || 0;
-                        const price = parseFloat(row.querySelector('input[name="item_price[]"]').value) || 0;
-                        const total = qty * price;
-                        subtotal += total;
-                        row.querySelector('.line-total').innerText = '<?= $currency ?> ' + total.toFixed(2);
-                    });
-
-                    const discount = parseFloat(document.getElementById('pos_discount').value) || 0;
-                    const finalTotal = Math.max(0, subtotal - discount);
-                    
-                    const paidInput = document.getElementById('pos_amount_paid');
-                    if (paidInput.dataset.touched !== "true") {
-                        paidInput.value = finalTotal.toFixed(2);
-                    }
-                    const amountPaid = parseFloat(paidInput.value) || 0;
-                    const balanceDue = Math.max(0, finalTotal - amountPaid);
-
-                    document.getElementById('pos_total_display').innerText = finalTotal.toFixed(2);
-                    document.getElementById('pos_paid_display').innerText = amountPaid.toFixed(2);
-                    document.getElementById('pos_balance_display').innerText = balanceDue.toFixed(2);
-                }
-
-                document.getElementById('pos_amount_paid').addEventListener('input', () => {
-                    document.getElementById('pos_amount_paid').dataset.touched = "true";
-                });
-
-                window.addEventListener('DOMContentLoaded', () => {
-                    addSaleRow();
-                });
-            </script>
-
-        <?php
-        // ---------------------------------------------------------------------------------
-        // TAB: PRODUCTS & INVENTORY CRUD
-        // ---------------------------------------------------------------------------------
-        elseif ($tab === 'products'): ?>
-            <div class="space-y-6">
-                <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-                    <div>
-                        <h1 class="text-2xl font-extrabold text-white tracking-tight">Products & Stock Inventory</h1>
-                        <p class="text-slate-400 text-sm mt-1">Manage poultry, eggs, feed, prices, and stock levels</p>
-                    </div>
-                    <button onclick="document.getElementById('newProductModal').classList.remove('hidden')" class="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm rounded-xl shadow-lg shadow-emerald-900/30">
-                        + Add New Product
-                    </button>
-                </div>
-
-                <!-- Products Table -->
-                <div class="glass-card rounded-2xl overflow-hidden">
-                    <div class="overflow-x-auto">
-                        <table class="w-full text-left text-sm text-slate-300">
-                            <thead class="bg-slate-900/80 text-xs uppercase font-bold text-slate-400 border-b border-slate-800">
-                                <tr>
-                                    <th class="px-6 py-4">Product Name</th>
-                                    <th class="px-6 py-4">Category</th>
-                                    <th class="px-6 py-4">Selling Price</th>
-                                    <th class="px-6 py-4">Cost Price</th>
-                                    <th class="px-6 py-4">Stock Level</th>
-                                    <th class="px-6 py-4 text-right">Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody class="divide-y divide-slate-800/60">
-                                <?php if (empty($allProducts)): ?>
-                                    <tr><td colspan="6" class="px-6 py-8 text-center text-slate-500">No products found. Click "+ Add New Product" to create one.</td></tr>
-                                <?php else: foreach ($allProducts as $p): 
-                                    $isLow = (float)$p['stockQuantity'] <= (float)$p['minStockThreshold'];
-                                ?>
-                                    <tr class="hover:bg-slate-900/40 transition-colors">
-                                        <td class="px-6 py-4 font-semibold text-white">
-                                            <?= htmlspecialchars($p['name']) ?>
-                                            <?php if (!empty($p['description'])): ?>
-                                                <div class="text-xs text-slate-500"><?= htmlspecialchars($p['description']) ?></div>
-                                            <?php endif; ?>
-                                        </td>
-                                        <td class="px-6 py-4">
-                                            <span class="px-2.5 py-1 rounded-full text-xs font-semibold bg-slate-800 text-slate-300 border border-slate-700">
-                                                <?= htmlspecialchars($p['category']) ?>
-                                            </span>
-                                        </td>
-                                        <td class="px-6 py-4 font-bold text-emerald-400"><?= $currency ?> <?= number_format($p['unitPrice'], 2) ?> / <?= htmlspecialchars($p['unit']) ?></td>
-                                        <td class="px-6 py-4 text-slate-400"><?= $currency ?> <?= number_format($p['costPrice'], 2) ?></td>
-                                        <td class="px-6 py-4">
-                                            <span class="font-black <?= $isLow ? 'text-rose-400' : 'text-slate-200' ?>">
-                                                <?= $p['stockQuantity'] ?> <?= htmlspecialchars($p['unit']) ?>
-                                            </span>
-                                            <?php if ($isLow): ?>
-                                                <span class="ml-2 text-[10px] bg-rose-500/20 text-rose-400 font-bold px-2 py-0.5 rounded-full">Low Stock</span>
-                                            <?php endif; ?>
-                                        </td>
-                                        <td class="px-6 py-4 text-right space-x-2">
-                                            <button onclick="openRestockModal(<?= $p['id'] ?>, '<?= htmlspecialchars(addslashes($p['name'])) ?>', '<?= htmlspecialchars($p['unit']) ?>')" class="px-2.5 py-1 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 rounded-lg text-xs font-bold border border-emerald-500/30">
-                                                + Restock
-                                            </button>
-                                            <button onclick="openEditProductModal(<?= htmlspecialchars(json_encode($p)) ?>)" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-medium">
-                                                Edit
-                                            </button>
-                                            <form method="POST" action="index.php" class="inline" onsubmit="return confirm('Delete <?= htmlspecialchars($p['name']) ?>
-                                                <input type="hidden" name="csrf" value="<?= htmlspecialchars($_SESSION['csrf'] ?? '') ?>">?')">
-                                                <input type="hidden" name="action" value="delete_product">
-                                                <input type="hidden" name="id" value="<?= $p['id'] ?>">
-                                                <button type="submit" class="px-2.5 py-1 bg-rose-950/40 hover:bg-rose-900/60 text-rose-400 rounded-lg text-xs font-medium">
-                                                    Delete
-                                                </button>
-                                            </form>
-                                        </td>
-                                    </tr>
-                                <?php endforeach; endif; ?>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-
-            <!-- MODAL: ADD PRODUCT -->
-            <div id="newProductModal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-                <div class="bg-slate-900 border border-slate-700 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-4">
-                    <div class="flex items-center justify-between">
-                        <h3 class="font-bold text-lg text-white">Create New Product</h3>
-                        <button onclick="document.getElementById('newProductModal').classList.add('hidden')" class="text-slate-400 hover:text-white font-bold text-xl">&times;</button>
-                    </div>
-                    <form method="POST" action="index.php" class="space-y-4">
-                        <input type="hidden" name="csrf" value="<?= htmlspecialchars($_SESSION['csrf'] ?? '') ?>">
-                        <input type="hidden" name="action" value="create_product">
-                        <div>
-                            <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Product Name</label>
-                            <input type="text" name="name" required placeholder="e.g. Broiler Chicken (Live), Crate of Eggs" class="w-full px-4 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-white">
-                        </div>
-                        <div class="grid grid-cols-2 gap-3">
-                            <div>
-                                <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Category</label>
-                                <select name="category" class="w-full px-4 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-white">
-                                    <option value="BROILER">Broiler</option>
-                                    <option value="LAYER">Layer</option>
-                                    <option value="EGGS">Eggs</option>
-                                    <option value="FEED">Feed</option>
-                                    <option value="PROCESSED">Processed</option>
-                                    <option value="OTHER">Other</option>
-                                </select>
-                            </div>
-                            <div>
-                                <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Unit of Measure</label>
-                                <input type="text" name="unit" value="unit" placeholder="crate, kg, pcs, bag" class="w-full px-4 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-white">
-                            </div>
-                        </div>
-                        <div class="grid grid-cols-2 gap-3">
-                            <div>
-                                <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Selling Price (<?= $currency ?>)</label>
-                                <input type="number" step="0.01" name="unitPrice" required placeholder="0.00" class="w-full px-4 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-white">
-                            </div>
-                            <div>
-                                <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Cost Price (<?= $currency ?>)</label>
-                                <input type="number" step="0.01" name="costPrice" value="0.00" class="w-full px-4 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-white">
-                            </div>
-                        </div>
-                        <div class="grid grid-cols-2 gap-3">
-                            <div>
-                                <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Initial Stock</label>
-                                <input type="number" step="0.1" name="stockQuantity" value="0" class="w-full px-4 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-white">
-                            </div>
-                            <div>
-                                <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Low Stock Alert Level</label>
-                                <input type="number" step="0.1" name="minStockThreshold" value="5" class="w-full px-4 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-white">
-                            </div>
-                        </div>
-                        <div>
-                            <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Description (Optional)</label>
-                            <input type="text" name="description" placeholder="Notes or batch details" class="w-full px-4 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-white">
-                        </div>
-                        <button type="submit" class="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl shadow-lg">
-                            Save Product
-                        </button>
-                    </form>
-                </div>
-            </div>
-
-            <!-- MODAL: EDIT PRODUCT -->
-            <div id="editProductModal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-                <div class="bg-slate-900 border border-slate-700 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-4">
-                    <div class="flex items-center justify-between">
-                        <h3 class="font-bold text-lg text-white">Edit Product</h3>
-                        <button onclick="document.getElementById('editProductModal').classList.add('hidden')" class="text-slate-400 hover:text-white font-bold text-xl">&times;</button>
-                    </div>
-                    <form method="POST" action="index.php" class="space-y-4">
-                        <input type="hidden" name="csrf" value="<?= htmlspecialchars($_SESSION['csrf'] ?? '') ?>">
-                        <input type="hidden" name="action" value="update_product">
-                        <input type="hidden" name="id" id="edit_p_id">
-                        <div>
-                            <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Product Name</label>
-                            <input type="text" name="name" id="edit_p_name" required class="w-full px-4 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-white">
-                        </div>
-                        <div class="grid grid-cols-2 gap-3">
-                            <div>
-                                <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Category</label>
-                                <select name="category" id="edit_p_cat" class="w-full px-4 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-white">
-                                    <option value="BROILER">Broiler</option>
-                                    <option value="LAYER">Layer</option>
-                                    <option value="EGGS">Eggs</option>
-                                    <option value="FEED">Feed</option>
-                                    <option value="PROCESSED">Processed</option>
-                                    <option value="OTHER">Other</option>
-                                </select>
-                            </div>
-                            <div>
-                                <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Unit</label>
-                                <input type="text" name="unit" id="edit_p_unit" class="w-full px-4 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-white">
-                            </div>
-                        </div>
-                        <div class="grid grid-cols-2 gap-3">
-                            <div>
-                                <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Selling Price (<?= $currency ?>)</label>
-                                <input type="number" step="0.01" name="unitPrice" id="edit_p_price" required class="w-full px-4 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-white">
-                            </div>
-                            <div>
-                                <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Cost Price (<?= $currency ?>)</label>
-                                <input type="number" step="0.01" name="costPrice" id="edit_p_cost" class="w-full px-4 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-white">
-                            </div>
-                        </div>
-                        <div class="grid grid-cols-2 gap-3">
-                            <div>
-                                <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Current Stock</label>
-                                <input type="number" step="0.1" name="stockQuantity" id="edit_p_stock" class="w-full px-4 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-white">
-                            </div>
-                            <div>
-                                <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Low Stock Level</label>
-                                <input type="number" step="0.1" name="minStockThreshold" id="edit_p_min" class="w-full px-4 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-white">
-                            </div>
-                        </div>
-                        <div>
-                            <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Description</label>
-                            <input type="text" name="description" id="edit_p_desc" class="w-full px-4 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-white">
-                        </div>
-                        <button type="submit" class="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl shadow-lg">
-                            Update Product
-                        </button>
-                    </form>
-                </div>
-            </div>
-
-            <!-- MODAL: RESTOCK -->
-            <div id="restockModal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-                <div class="bg-slate-900 border border-slate-700 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
-                    <div class="flex items-center justify-between">
-                        <h3 class="font-bold text-lg text-white">Restock Product</h3>
-                        <button onclick="document.getElementById('restockModal').classList.add('hidden')" class="text-slate-400 hover:text-white font-bold text-xl">&times;</button>
-                    </div>
-                    <form method="POST" action="index.php" class="space-y-4">
-                        <input type="hidden" name="csrf" value="<?= htmlspecialchars($_SESSION['csrf'] ?? '') ?>">
-                        <input type="hidden" name="action" value="restock_product">
-                        <input type="hidden" name="id" id="restock_p_id">
-                        <div class="p-3 bg-slate-950 rounded-xl border border-slate-800">
-                            <div class="text-xs text-slate-400">Product</div>
-                            <div class="font-bold text-white text-base" id="restock_p_name">--</div>
-                        </div>
-                        <div>
-                            <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Quantity to Add (<span id="restock_p_unit"></span>)</label>
-                            <input type="number" step="0.1" name="add_quantity" required min="0.1" placeholder="e.g. 50" class="w-full px-4 py-3 bg-slate-950 border border-slate-700 rounded-xl text-white">
-                        </div>
-                        <div>
-                            <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Reason / Batch Notes</label>
-                            <input type="text" name="notes" placeholder="e.g. New harvest batch arrival" class="w-full px-4 py-3 bg-slate-950 border border-slate-700 rounded-xl text-white">
-                        </div>
-                        <button type="submit" class="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl shadow-lg">
-                            Confirm Restock
-                        </button>
-                    </form>
-                </div>
-            </div>
-
-            <script>
-                function openEditProductModal(p) {
-                    document.getElementById('edit_p_id').value = p.id;
-                    document.getElementById('edit_p_name').value = p.name;
-                    document.getElementById('edit_p_cat').value = p.category;
-                    document.getElementById('edit_p_unit').value = p.unit;
-                    document.getElementById('edit_p_price').value = p.unitPrice;
-                    document.getElementById('edit_p_cost').value = p.costPrice;
-                    document.getElementById('edit_p_stock').value = p.stockQuantity;
-                    document.getElementById('edit_p_min').value = p.minStockThreshold;
-                    document.getElementById('edit_p_desc').value = p.description || '';
-                    document.getElementById('editProductModal').classList.remove('hidden');
-                }
-
-                function openRestockModal(id, name, unit) {
-                    document.getElementById('restock_p_id').value = id;
-                    document.getElementById('restock_p_name').innerText = name;
-                    document.getElementById('restock_p_unit').innerText = unit;
-                    document.getElementById('restockModal').classList.remove('hidden');
-                }
-            </script>
-
-        <?php
-        // ---------------------------------------------------------------------------------
-        // TAB: SALES HISTORY
-        // ---------------------------------------------------------------------------------
-        elseif ($tab === 'sales'): 
-            $allSales = $db->query("SELECT * FROM sales_orders ORDER BY timestamp DESC")->fetchAll();
-        ?>
-            <div class="space-y-6">
-                <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-                    <div>
-                        <h1 class="text-2xl font-extrabold text-white tracking-tight">Sales Orders & Invoices</h1>
-                        <p class="text-slate-400 text-sm mt-1">Full transaction register of all counter sales and deliveries</p>
-                    </div>
-                    <a href="index.php?tab=new_sale" class="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm rounded-xl shadow-lg shadow-emerald-900/30">
-                        + New Sale
-                    </a>
-                </div>
-
-                <div class="glass-card rounded-2xl overflow-hidden">
-                    <div class="overflow-x-auto">
-                        <table class="w-full text-left text-sm text-slate-300">
-                            <thead class="bg-slate-900/80 text-xs uppercase font-bold text-slate-400 border-b border-slate-800">
-                                <tr>
-                                    <th class="px-6 py-4">Invoice #</th>
-                                    <th class="px-6 py-4">Customer</th>
-                                    <th class="px-6 py-4">Date</th>
-                                    <th class="px-6 py-4">Total Amount</th>
-                                    <th class="px-6 py-4">Paid</th>
-                                    <th class="px-6 py-4">Balance Due</th>
-                                    <th class="px-6 py-4">Status</th>
-                                </tr>
-                            </thead>
-                            <tbody class="divide-y divide-slate-800/60">
-                                <?php if (empty($allSales)): ?>
-                                    <tr><td colspan="7" class="px-6 py-8 text-center text-slate-500">No sales recorded yet.</td></tr>
-                                <?php else: foreach ($allSales as $s): ?>
-                                    <tr class="hover:bg-slate-900/40 transition-colors">
-                                        <td class="px-6 py-4 font-bold text-white">#<?= htmlspecialchars((string)($s['invoiceNumber'] ?? ('INV-' . ($s['id'] ?? '')))) ?></td>
-                                        <td class="px-6 py-4 font-semibold text-slate-200">
-                                            <?= htmlspecialchars((string)($s['customerName'] ?? 'Walk-in Customer')) ?>
-                                            <?php if (!empty($s['customerPhone'])): ?>
-                                                <div class="text-xs text-slate-500"><?= htmlspecialchars((string)$s['customerPhone']) ?></div>
-                                            <?php endif; ?>
-                                        </td>
-                                        <td class="px-6 py-4 text-slate-400 text-xs"><?= date('d M Y, h:i A', (int)round((float)($s['timestamp'] ?? 0) / 1000)) ?></td>
-                                        <td class="px-6 py-4 font-bold text-white"><?= $currency ?> <?= number_format($s['totalAmount'], 2) ?></td>
-                                        <td class="px-6 py-4 text-emerald-400 font-semibold"><?= $currency ?> <?= number_format($s['amountPaid'], 2) ?></td>
-                                        <td class="px-6 py-4 font-bold <?= (float)$s['balanceDue'] > 0 ? 'text-rose-400' : 'text-slate-400' ?>">
-                                            <?= $currency ?> <?= number_format($s['balanceDue'], 2) ?>
-                                        </td>
-                                        <td class="px-6 py-4">
-                                            <span class="px-2.5 py-1 rounded-full text-xs font-bold <?= (float)$s['balanceDue'] > 0 ? 'bg-rose-500/20 text-rose-400' : 'bg-emerald-500/20 text-emerald-400' ?>">
-                                                <?= $s['paymentStatus'] ?>
-                                            </span>
-                                        </td>
-                                    </tr>
-                                <?php endforeach; endif; ?>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-
-        <?php
-        // ---------------------------------------------------------------------------------
-        // TAB: CUSTOMERS & DEBTORS
-        // ---------------------------------------------------------------------------------
-        elseif ($tab === 'customers' || $tab === 'debtors'): 
-            $isDebtorsOnly = ($tab === 'debtors');
-            $customerList = $isDebtorsOnly 
-                ? $db->query("SELECT * FROM customers WHERE COALESCE(currentBalance, totalDebt, 0) > 0.009 ORDER BY COALESCE(currentBalance, totalDebt, 0) DESC")->fetchAll()
-                : $db->query("SELECT * FROM customers ORDER BY name ASC")->fetchAll();
-        ?>
-            <div class="space-y-6">
-                <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-                    <div>
-                        <h1 class="text-2xl font-extrabold text-white tracking-tight"><?= $isDebtorsOnly ? 'Debtors Ledger (Owing Money)' : 'Customer Directory' ?></h1>
-                        <p class="text-slate-400 text-sm mt-1">Track customer balances, WhatsApp links, and debt repayments</p>
-                    </div>
-                    <div class="flex gap-3">
-                        <button onclick="document.getElementById('newCustomerModal').classList.remove('hidden')" class="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm rounded-xl shadow-lg shadow-emerald-900/30">
-                            + Add New Customer
-                        </button>
-                    </div>
-                </div>
-
-                <div class="glass-card rounded-2xl overflow-hidden">
-                    <div class="overflow-x-auto">
-                        <table class="w-full text-left text-sm text-slate-300">
-                            <thead class="bg-slate-900/80 text-xs uppercase font-bold text-slate-400 border-b border-slate-800">
-                                <tr>
-                                    <th class="px-6 py-4">Customer Name</th>
-                                    <th class="px-6 py-4">Contact</th>
-                                    <th class="px-6 py-4">Total Purchases</th>
-                                    <th class="px-6 py-4">Total Paid</th>
-                                    <th class="px-6 py-4">Current Debt</th>
-                                    <th class="px-6 py-4 text-right">Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody class="divide-y divide-slate-800/60">
-                                <?php if (empty($customerList)): ?>
-                                    <tr><td colspan="6" class="px-6 py-8 text-center text-slate-500">No customers found.</td></tr>
-                                <?php else: foreach ($customerList as $c): 
-                                    $bal = (float)($c['currentBalance'] ?: $c['totalDebt'] ?: 0.0);
-                                ?>
-                                    <tr class="hover:bg-slate-900/40 transition-colors">
-                                        <td class="px-6 py-4 font-semibold text-white">
-                                            <?= htmlspecialchars($c['name']) ?>
-                                            <?php if (!empty($c['address'])): ?>
-                                                <div class="text-xs text-slate-500"><?= htmlspecialchars($c['address']) ?></div>
-                                            <?php endif; ?>
-                                        </td>
-                                        <td class="px-6 py-4">
-                                            <div><?= htmlspecialchars($c['phone'] ?: 'No phone') ?></div>
-                                            <?php if (!empty($c['whatsapp'])): ?>
-                                                <a href="https://wa.me/<?= preg_replace('/[^0-9]/', '', $c['whatsapp']) ?>" target="_blank" class="text-xs text-emerald-400 hover:underline">WhatsApp 💬</a>
-                                            <?php endif; ?>
-                                        </td>
-                                        <td class="px-6 py-4 text-slate-300 font-semibold"><?= $currency ?> <?= number_format($c['totalPurchases'], 2) ?></td>
-                                        <td class="px-6 py-4 text-emerald-400 font-semibold"><?= $currency ?> <?= number_format($c['totalPaid'], 2) ?></td>
-                                        <td class="px-6 py-4 font-black <?= $bal > 0 ? 'text-rose-400' : 'text-emerald-400' ?>">
-                                            <?= $currency ?> <?= number_format($bal, 2) ?>
-                                        </td>
-                                        <td class="px-6 py-4 text-right space-x-2">
-                                            <?php if ($bal > 0): ?>
-                                                <button onclick="openPaymentModal(<?= $c['id'] ?>, '<?= htmlspecialchars(addslashes($c['name'])) ?>', <?= $bal ?>)" class="px-3 py-1 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 rounded-lg text-xs font-bold border border-emerald-500/30">
-                                                    + Record Payment
-                                                </button>
-                                            <?php endif; ?>
-                                            <button onclick="openEditCustomerModal(<?= htmlspecialchars(json_encode($c)) ?>)" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-medium">
-                                                Edit
-                                            </button>
-                                            <form method="POST" action="index.php" class="inline" onsubmit="return confirm('Delete <?= htmlspecialchars($c['name']) ?>
-                                                <input type="hidden" name="csrf" value="<?= htmlspecialchars($_SESSION['csrf'] ?? '') ?>">?')">
-                                                <input type="hidden" name="action" value="delete_customer">
-                                                <input type="hidden" name="id" value="<?= $c['id'] ?>">
-                                                <button type="submit" class="px-2.5 py-1 bg-rose-950/40 hover:bg-rose-900/60 text-rose-400 rounded-lg text-xs font-medium">
-                                                    Delete
-                                                </button>
-                                            </form>
-                                        </td>
-                                    </tr>
-                                <?php endforeach; endif; ?>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-
-            <!-- MODAL: ADD CUSTOMER -->
-            <div id="newCustomerModal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-                <div class="bg-slate-900 border border-slate-700 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
-                    <div class="flex items-center justify-between">
-                        <h3 class="font-bold text-lg text-white">Add New Customer</h3>
-                        <button onclick="document.getElementById('newCustomerModal').classList.add('hidden')" class="text-slate-400 hover:text-white font-bold text-xl">&times;</button>
-                    </div>
-                    <form method="POST" action="index.php" class="space-y-4">
-                        <input type="hidden" name="csrf" value="<?= htmlspecialchars($_SESSION['csrf'] ?? '') ?>">
-                        <input type="hidden" name="action" value="create_customer">
-                        <div>
-                            <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Customer Full Name</label>
-                            <input type="text" name="name" required placeholder="e.g. Mama Akua, Kofi Mensah" class="w-full px-4 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-white">
-                        </div>
-                        <div class="grid grid-cols-2 gap-3">
-                            <div>
-                                <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Phone Number</label>
-                                <input type="text" name="phone" placeholder="024XXXXXXX" class="w-full px-4 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-white">
-                            </div>
-                            <div>
-                                <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">WhatsApp</label>
-                                <input type="text" name="whatsapp" placeholder="024XXXXXXX" class="w-full px-4 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-white">
-                            </div>
-                        </div>
-                        <div>
-                            <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Location / Address</label>
-                            <input type="text" name="address" placeholder="e.g. Madina Market, Accra" class="w-full px-4 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-white">
-                        </div>
-                        <div>
-                            <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Initial Outstanding Debt (<?= $currency ?>)</label>
-                            <input type="number" step="0.01" name="initial_debt" value="0.00" class="w-full px-4 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-white">
-                        </div>
-                        <div>
-                            <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Notes</label>
-                            <input type="text" name="notes" placeholder="Optional notes" class="w-full px-4 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-white">
-                        </div>
-                        <button type="submit" class="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl shadow-lg">
-                            Save Customer
-                        </button>
-                    </form>
-                </div>
-            </div>
-
-            <!-- MODAL: EDIT CUSTOMER -->
-            <div id="editCustomerModal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-                <div class="bg-slate-900 border border-slate-700 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
-                    <div class="flex items-center justify-between">
-                        <h3 class="font-bold text-lg text-white">Edit Customer</h3>
-                        <button onclick="document.getElementById('editCustomerModal').classList.add('hidden')" class="text-slate-400 hover:text-white font-bold text-xl">&times;</button>
-                    </div>
-                    <form method="POST" action="index.php" class="space-y-4">
-                        <input type="hidden" name="csrf" value="<?= htmlspecialchars($_SESSION['csrf'] ?? '') ?>">
-                        <input type="hidden" name="action" value="update_customer">
-                        <input type="hidden" name="id" id="edit_c_id">
-                        <div>
-                            <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Customer Name</label>
-                            <input type="text" name="name" id="edit_c_name" required class="w-full px-4 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-white">
-                        </div>
-                        <div class="grid grid-cols-2 gap-3">
-                            <div>
-                                <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Phone</label>
-                                <input type="text" name="phone" id="edit_c_phone" class="w-full px-4 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-white">
-                            </div>
-                            <div>
-                                <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">WhatsApp</label>
-                                <input type="text" name="whatsapp" id="edit_c_whatsapp" class="w-full px-4 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-white">
-                            </div>
-                        </div>
-                        <div>
-                            <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Address</label>
-                            <input type="text" name="address" id="edit_c_address" class="w-full px-4 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-white">
-                        </div>
-                        <div>
-                            <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Notes</label>
-                            <input type="text" name="notes" id="edit_c_notes" class="w-full px-4 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-white">
-                        </div>
-                        <button type="submit" class="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl shadow-lg">
-                            Update Customer
-                        </button>
-                    </form>
-                </div>
-            </div>
-
-            <script>
-                function openEditCustomerModal(c) {
-                    document.getElementById('edit_c_id').value = c.id;
-                    document.getElementById('edit_c_name').value = c.name;
-                    document.getElementById('edit_c_phone').value = c.phone || '';
-                    document.getElementById('edit_c_whatsapp').value = c.whatsapp || '';
-                    document.getElementById('edit_c_address').value = c.address || '';
-                    document.getElementById('edit_c_notes').value = c.notes || '';
-                    document.getElementById('editCustomerModal').classList.remove('hidden');
-                }
-            </script>
-
-        <?php
-        // ---------------------------------------------------------------------------------
-        // TAB: PAYMENT LOGS
-        // ---------------------------------------------------------------------------------
-        elseif ($tab === 'payments'): 
-            $allPayments = $db->query("SELECT * FROM payments ORDER BY timestamp DESC")->fetchAll();
-        ?>
-            <div class="space-y-6">
-                <div>
-                    <h1 class="text-2xl font-extrabold text-white tracking-tight">Payments & Debt Recoveries</h1>
-                    <p class="text-slate-400 text-sm mt-1">Audit trail of all cash, MoMo, and installment receipts</p>
-                </div>
-
-                <div class="glass-card rounded-2xl overflow-hidden">
-                    <div class="overflow-x-auto">
-                        <table class="w-full text-left text-sm text-slate-300">
-                            <thead class="bg-slate-900/80 text-xs uppercase font-bold text-slate-400 border-b border-slate-800">
-                                <tr>
-                                    <th class="px-6 py-4">Receipt #</th>
-                                    <th class="px-6 py-4">Customer</th>
-                                    <th class="px-6 py-4">Date</th>
-                                    <th class="px-6 py-4">Amount Paid</th>
-                                    <th class="px-6 py-4">Method</th>
-                                    <th class="px-6 py-4">Balance After</th>
-                                    <th class="px-6 py-4">Notes</th>
-                                </tr>
-                            </thead>
-                            <tbody class="divide-y divide-slate-800/60">
-                                <?php if (empty($allPayments)): ?>
-                                    <tr><td colspan="7" class="px-6 py-8 text-center text-slate-500">No payment records found.</td></tr>
-                                <?php else: foreach ($allPayments as $p): ?>
-                                    <tr class="hover:bg-slate-900/40">
-                                        <td class="px-6 py-4 font-bold text-white">#PAY-<?= $p['id'] ?></td>
-                                        <td class="px-6 py-4 font-semibold text-slate-200"><?= htmlspecialchars($p['customerName']) ?></td>
-                                        <td class="px-6 py-4 text-slate-400 text-xs"><?= date('d M Y, h:i A', (int)round((float)($p['timestamp'] ?? 0) / 1000)) ?></td>
-                                        <td class="px-6 py-4 font-bold text-emerald-400"><?= $currency ?> <?= number_format($p['amount'], 2) ?></td>
-                                        <td class="px-6 py-4">
-                                            <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-800 text-slate-300">
-                                                <?= htmlspecialchars($p['paymentMethod']) ?>
-                                            </span>
-                                        </td>
-                                        <td class="px-6 py-4 font-bold <?= (float)$p['balanceAfterPayment'] > 0 ? 'text-rose-400' : 'text-slate-400' ?>">
-                                            <?= $currency ?> <?= number_format($p['balanceAfterPayment'], 2) ?>
-                                        </td>
-                                        <td class="px-6 py-4 text-xs text-slate-400"><?= htmlspecialchars($p['notes'] ?: '—') ?></td>
-                                    </tr>
-                                <?php endforeach; endif; ?>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-
-        <?php
-        // ---------------------------------------------------------------------------------
-        // TAB: INVENTORY LOGS
-        // ---------------------------------------------------------------------------------
-        elseif ($tab === 'inventory_logs'): 
-            $allLogs = $db->query("SELECT * FROM inventory_logs ORDER BY timestamp DESC LIMIT 100")->fetchAll();
-        ?>
-            <div class="space-y-6">
-                <div>
-                    <h1 class="text-2xl font-extrabold text-white tracking-tight">Inventory Movement History</h1>
-                    <p class="text-slate-400 text-sm mt-1">Detailed log of all stock restocks, sales deductions, and adjustments</p>
-                </div>
-
-                <div class="glass-card rounded-2xl overflow-hidden">
-                    <div class="overflow-x-auto">
-                        <table class="w-full text-left text-sm text-slate-300">
-                            <thead class="bg-slate-900/80 text-xs uppercase font-bold text-slate-400 border-b border-slate-800">
-                                <tr>
-                                    <th class="px-6 py-4">Timestamp</th>
-                                    <th class="px-6 py-4">Product</th>
-                                    <th class="px-6 py-4">Action Type</th>
-                                    <th class="px-6 py-4">Quantity Changed</th>
-                                    <th class="px-6 py-4">Stock After</th>
-                                    <th class="px-6 py-4">Reason / Notes</th>
-                                </tr>
-                            </thead>
-                            <tbody class="divide-y divide-slate-800/60">
-                                <?php if (empty($allLogs)): ?>
-                                    <tr><td colspan="6" class="px-6 py-8 text-center text-slate-500">No inventory movements recorded yet.</td></tr>
-                                <?php else: foreach ($allLogs as $l): 
-                                    $isAdd = (float)$l['quantityChanged'] > 0;
-                                ?>
-                                    <tr class="hover:bg-slate-900/40">
-                                        <td class="px-6 py-4 text-xs text-slate-400"><?= date('d M Y, h:i A', (int)round((float)($l['timestamp'] ?? 0) / 1000)) ?></td>
-                                        <td class="px-6 py-4 font-bold text-white"><?= htmlspecialchars($l['productName']) ?></td>
-                                        <td class="px-6 py-4">
-                                            <span class="px-2.5 py-0.5 rounded-full text-xs font-bold <?= $l['changeType'] === 'RESTOCK' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-cyan-500/20 text-cyan-400' ?>">
-                                                <?= htmlspecialchars($l['changeType']) ?>
-                                            </span>
-                                        </td>
-                                        <td class="px-6 py-4 font-black <?= $isAdd ? 'text-emerald-400' : 'text-rose-400' ?>">
-                                            <?= $isAdd ? '+' : '' ?><?= $l['quantityChanged'] ?> <?= htmlspecialchars($l['unit']) ?>
-                                        </td>
-                                        <td class="px-6 py-4 font-semibold text-slate-300"><?= $l['quantityAfter'] ?> <?= htmlspecialchars($l['unit']) ?></td>
-                                        <td class="px-6 py-4 text-xs text-slate-400"><?= htmlspecialchars($l['notes'] ?: '—') ?></td>
-                                    </tr>
-                                <?php endforeach; endif; ?>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-
-        <?php
-        // ---------------------------------------------------------------------------------
-        // TAB: SETTINGS
-        // ---------------------------------------------------------------------------------
-        elseif ($tab === 'settings'): ?>
-            <div class="max-w-3xl space-y-6">
-                <div>
-                    <h1 class="text-2xl font-extrabold text-white tracking-tight">Farm Settings & Receipt Info</h1>
-                    <p class="text-slate-400 text-sm mt-1">Configure business profile, currency symbol, and payment details</p>
-                </div>
-
-                <div class="glass-card p-6 lg:p-8 rounded-2xl">
-                    <form method="POST" action="index.php" class="space-y-5">
-                        <input type="hidden" name="csrf" value="<?= htmlspecialchars($_SESSION['csrf'] ?? '') ?>">
-                        <input type="hidden" name="action" value="update_settings">
-                        <div>
-                            <label class="block text-xs font-semibold text-slate-300 uppercase mb-2">Farm / Business Name</label>
-                            <input type="text" name="businessName" value="<?= htmlspecialchars((string)($settings['businessName'] ?? '')) ?>" required class="w-full px-4 py-3 bg-slate-900 border border-slate-700 rounded-xl text-white">
-                        </div>
-                        <div>
-                            <label class="block text-xs font-semibold text-slate-300 uppercase mb-2">Tagline / Slogan</label>
-                            <input type="text" name="businessTagline" value="<?= htmlspecialchars((string)($settings['businessTagline'] ?? '')) ?>" class="w-full px-4 py-3 bg-slate-900 border border-slate-700 rounded-xl text-white">
-                        </div>
-                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <div>
-                                <label class="block text-xs font-semibold text-slate-300 uppercase mb-2">Contact Phone</label>
-                                <input type="text" name="businessPhone" value="<?= htmlspecialchars((string)($settings['businessPhone'] ?? '')) ?>" class="w-full px-4 py-3 bg-slate-900 border border-slate-700 rounded-xl text-white">
-                            </div>
-                            <div>
-                                <label class="block text-xs font-semibold text-slate-300 uppercase mb-2">Currency Symbol</label>
-                                <input type="text" name="currencySymbol" value="<?= htmlspecialchars((string)(($settings['currencySymbol'] ?? '') ?: 'GH₵')) ?>" class="w-full px-4 py-3 bg-slate-900 border border-slate-700 rounded-xl text-white">
-                            </div>
-                        </div>
-                        <div>
-                            <label class="block text-xs font-semibold text-slate-300 uppercase mb-2">Location / Address</label>
-                            <input type="text" name="businessLocation" value="<?= htmlspecialchars((string)($settings['businessLocation'] ?? '')) ?>" class="w-full px-4 py-3 bg-slate-900 border border-slate-700 rounded-xl text-white">
-                        </div>
-                        <div>
-                            <label class="block text-xs font-semibold text-slate-300 uppercase mb-2">MTN MoMo Payment Instructions</label>
-                            <input type="text" name="momoPaymentDetails" value="<?= htmlspecialchars((string)($settings['momoPaymentDetails'] ?? '')) ?>" class="w-full px-4 py-3 bg-slate-900 border border-slate-700 rounded-xl text-white">
-                        </div>
-                        <button type="submit" class="w-full py-3.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl shadow-lg transition-all">
-                            Save Farm Settings
-                        </button>
-                    </form>
-                </div>
-            </div>
-        <?php endif; ?>
-    </main>
-
-    <!-- GLOBAL MODAL: RECORD PAYMENT -->
-    <div id="paymentModal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-        <div class="bg-slate-900 border border-slate-700 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
-            <div class="flex items-center justify-between">
-                <h3 class="font-bold text-lg text-white">Record Debt Payment</h3>
-                <button onclick="document.getElementById('paymentModal').classList.add('hidden')" class="text-slate-400 hover:text-white font-bold text-xl">&times;</button>
-            </div>
-            <form method="POST" action="index.php" class="space-y-4">
-                <input type="hidden" name="csrf" value="<?= htmlspecialchars($_SESSION['csrf'] ?? '') ?>">
-                <input type="hidden" name="action" value="record_payment">
-                <input type="hidden" name="customer_id" id="pay_cust_id">
-                <div class="p-3 bg-slate-950 rounded-xl border border-slate-800 space-y-1">
-                    <div class="text-xs text-slate-400">Debtor</div>
-                    <div class="font-bold text-white text-base" id="pay_cust_name">--</div>
-                    <div class="text-xs text-rose-400 font-semibold">Current Balance: <?= $currency ?> <span id="pay_cust_debt">0.00</span></div>
-                </div>
-                <div>
-                    <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Amount to Pay (<?= $currency ?>)</label>
-                    <input type="number" step="0.01" name="amount" id="pay_amount" required min="0.01" class="w-full px-4 py-3 bg-slate-950 border border-slate-700 rounded-xl text-white font-bold text-lg text-emerald-400">
-                </div>
-                <div>
-                    <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Payment Method</label>
-                    <select name="payment_method" class="w-full px-4 py-3 bg-slate-950 border border-slate-700 rounded-xl text-white">
-                        <option value="CASH">💵 Cash</option>
-                        <option value="MOMO">📱 MTN MoMo</option>
-                        <option value="BANK">🏦 Bank Transfer</option>
-                    </select>
-                </div>
-                <div>
-                    <label class="block text-xs font-semibold text-slate-300 uppercase mb-1">Payment Memo / Receipt Note</label>
-                    <input type="text" name="notes" placeholder="e.g. Received via MoMo reference #1234" class="w-full px-4 py-3 bg-slate-950 border border-slate-700 rounded-xl text-white">
-                </div>
-                <button type="submit" class="w-full py-3.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl shadow-lg">
-                    Confirm & Apply Payment
-                </button>
-            </form>
-        </div>
+        <button class="icon-btn ml-auto lg:hidden" onclick="toggleNav(false)" aria-label="Close menu"><?= icon('x', 'ic-sm') ?></button>
     </div>
 
-    <script>
-        function openPaymentModal(customerId, customerName, debtAmount) {
-            document.getElementById('pay_cust_id').value = customerId;
-            document.getElementById('pay_cust_name').innerText = customerName;
-            document.getElementById('pay_cust_debt').innerText = parseFloat(debtAmount).toFixed(2);
-            document.getElementById('pay_amount').value = parseFloat(debtAmount).toFixed(2);
-            document.getElementById('paymentModal').classList.remove('hidden');
+    <div class="px-4">
+        <a href="index.php?tab=new_sale" class="btn btn-primary w-full"><?= icon('plus', 'ic-sm') ?> New sale <span class="kbd ml-auto" style="border-color:currentColor;color:inherit;opacity:.7">N</span></a>
+    </div>
+
+    <nav class="flex-1 overflow-y-auto px-3 pb-4">
+        <?php foreach ($nav as $group => $links): ?>
+            <div class="nav-group"><?= e($group) ?></div>
+            <?php foreach ($links as [$key, $label, $ic, $pill]): ?>
+                <a href="index.php?tab=<?= $key ?>" class="nav-link" <?= $tab === $key ? 'aria-current="page"' : '' ?>>
+                    <?= icon($ic) ?> <?= e($label) ?>
+                    <?php if ($pill): ?><span class="pill bg-tone-<?= $pill[1] ?>" title="<?= $pill[0] . ' ' . e($pill[2]) ?>"><?= $pill[0] ?></span><?php endif; ?>
+                </a>
+            <?php endforeach; ?>
+        <?php endforeach; ?>
+    </nav>
+
+    <div class="p-3 divider space-y-1">
+        <a href="index.php?tab=settings" class="nav-link" <?= $tab === 'settings' ? 'aria-current="page"' : '' ?>><?= icon('settings') ?> Settings</a>
+        <button type="button" class="nav-link w-full" onclick="toggleTheme()">
+            <span class="theme-dark-only"><?= icon('sun') ?></span><span class="theme-light-only"><?= icon('moon') ?></span>
+            <span class="theme-light-only">Dark mode</span><span class="theme-dark-only">Light mode</span>
+        </button>
+        <a href="index.php?logout=1" class="nav-link"><?= icon('logout') ?> Sign out</a>
+        <div class="flex items-center gap-2 px-3 pt-2 text-xs subtle">
+            <span class="inline-block w-2 h-2 rounded-full" style="background:var(--success)"></span>
+            <span class="truncate">Live · <?= e($DB_NAME) ?></span>
+        </div>
+    </div>
+</aside>
+
+<!-- Mobile top bar -->
+<div class="lg:hidden sticky top-0 z-30 flex items-center gap-3 px-4 h-16" style="background:var(--surface);border-bottom:1px solid var(--border)">
+    <button class="icon-btn" onclick="toggleNav(true)" aria-label="Open menu"><?= icon('menu', 'ic-sm') ?></button>
+    <div class="font-bold truncate flex-1"><?= e($pageTitles[$tab]) ?></div>
+    <?php if ($tab !== 'new_sale'): ?>
+        <a href="index.php?tab=new_sale" class="btn btn-primary btn-sm"><?= icon('plus', 'ic-sm') ?> Sale</a>
+    <?php endif; ?>
+</div>
+
+<!-- ===================== MAIN ===================== -->
+<main id="main" class="lg:pl-72">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-10 py-6 lg:py-10">
+
+<?php
+// =====================================================================
+// DASHBOARD
+// =====================================================================
+if ($tab === 'dashboard'):
+    $recentSales = $db->query("SELECT * FROM sales_orders ORDER BY timestamp DESC LIMIT 6")->fetchAll();
+    $topDebtors = $db->query("SELECT * FROM customers WHERE COALESCE(currentBalance, totalDebt, 0) > 0.009 ORDER BY COALESCE(currentBalance, totalDebt, 0) DESC LIMIT 5")->fetchAll();
+    $lowStock = $db->query("SELECT * FROM products WHERE stockQuantity <= minStockThreshold ORDER BY stockQuantity ASC LIMIT 5")->fetchAll();
+
+    // Last 14 days of sales, bucketed per day.
+    $days = 14;
+    $chartStartMs = strtotime('today -' . ($days - 1) . ' days') * 1000;
+    $q = $db->prepare("SELECT timestamp, totalAmount, itemsJson FROM sales_orders WHERE timestamp >= ?");
+    $q->execute([min($chartStartMs, strtotime('first day of last month 00:00') * 1000)]);
+    $periodRows = $q->fetchAll();
+
+    $series = [];
+    for ($i = 0; $i < $days; $i++) { $series[date('Y-m-d', strtotime("today -" . ($days - 1 - $i) . " days"))] = 0.0; }
+    $todayTotal = 0.0; $todayCount = 0;
+    $thisMonthStart = strtotime('first day of this month 00:00') * 1000;
+    $lastMonthStart = strtotime('first day of last month 00:00') * 1000;
+    $thisMonth = 0.0; $lastMonthToDate = 0.0;
+    $dayOfMonth = (int)date('j');
+    $productTotals = [];
+    foreach ($periodRows as $r) {
+        $ms = (float)$r['timestamp']; $amt = (float)$r['totalAmount'];
+        $key = date('Y-m-d', (int)round($ms / 1000));
+        if (isset($series[$key])) $series[$key] += $amt;
+        if ($ms >= $todayStartMs) { $todayTotal += $amt; $todayCount++; }
+        if ($ms >= $thisMonthStart) {
+            $thisMonth += $amt;
+            foreach ((json_decode((string)$r['itemsJson'], true) ?: []) as $it) {
+                $n = (string)($it['productName'] ?? 'Item');
+                $productTotals[$n] = ($productTotals[$n] ?? 0) + (float)($it['lineTotal'] ?? 0);
+            }
+        } elseif ($ms >= $lastMonthStart && (int)date('j', (int)round($ms / 1000)) <= $dayOfMonth) {
+            $lastMonthToDate += $amt; // compare like-for-like: same days of the month
         }
-    </script>
+    }
+    arsort($productTotals);
+    $topProducts = array_slice($productTotals, 0, 5, true);
+    $maxDay = max(1.0, max($series));
+    $chartTotal = array_sum($series);
+    $monthDelta = $lastMonthToDate > 0 ? (($thisMonth - $lastMonthToDate) / $lastMonthToDate) * 100 : null;
+    $hour = (int)date('G');
+    $greeting = $hour < 12 ? 'Good morning' : ($hour < 17 ? 'Good afternoon' : 'Good evening');
+?>
+        <?php pageHeader($greeting, date('l, j F Y'),
+            '<a href="index.php?tab=customers&filter=owing" class="btn btn-secondary">' . icon('wallet', 'ic-sm') . ' Collect payment</a>'
+            . '<a href="index.php?tab=new_sale" class="btn btn-primary">' . icon('plus', 'ic-sm') . ' New sale</a>'); ?>
+
+        <!-- KPIs -->
+        <section class="grid grid-cols-2 xl:grid-cols-4 gap-3 lg:gap-5 mb-6" aria-label="Key figures">
+            <div class="card card-pad">
+                <div class="flex items-center gap-2 muted text-sm font-medium"><span class="tile bg-tone-primary" style="width:32px;height:32px;border-radius:10px"><?= icon('trend', 'ic-sm') ?></span> Today</div>
+                <div class="kpi"><?= money($todayTotal) ?></div>
+                <div class="text-sm muted mt-1"><?= $todayCount ?> <?= $todayCount === 1 ? 'sale' : 'sales' ?></div>
+            </div>
+            <div class="card card-pad">
+                <div class="flex items-center gap-2 muted text-sm font-medium"><span class="tile bg-tone-info" style="width:32px;height:32px;border-radius:10px"><?= icon('receipt', 'ic-sm') ?></span> This month</div>
+                <div class="kpi"><?= money($thisMonth) ?></div>
+                <div class="text-sm mt-1 flex items-center gap-1">
+                    <?php if ($monthDelta === null): ?>
+                        <span class="muted">No sales last month to compare</span>
+                    <?php else: $up = $monthDelta >= 0; ?>
+                        <span class="badge tone-<?= $up ? 'success' : 'danger' ?>"><?= icon($up ? 'arrowUp' : 'arrowDown', 'ic-sm') ?><?= number_format(abs($monthDelta), 0) ?>%</span>
+                        <span class="muted">vs same days last month</span>
+                    <?php endif; ?>
+                </div>
+            </div>
+            <div class="card card-pad">
+                <div class="flex items-center gap-2 muted text-sm font-medium"><span class="tile bg-tone-success" style="width:32px;height:32px;border-radius:10px"><?= icon('checkCircle', 'ic-sm') ?></span> Collected</div>
+                <div class="kpi"><?= money($totalCollectedSum) ?></div>
+                <div class="text-sm muted mt-1">of <?= money($totalSalesSum) ?> sold</div>
+            </div>
+            <a href="index.php?tab=customers&filter=owing" class="card card-pad block transition hover:ring-2" style="--tw-ring-color:var(--danger)">
+                <div class="flex items-center gap-2 muted text-sm font-medium"><span class="tile bg-tone-danger" style="width:32px;height:32px;border-radius:10px"><?= icon('clock', 'ic-sm') ?></span> Owed to you</div>
+                <div class="kpi <?= $totalDebtSum > 0 ? 'text-danger' : '' ?>"><?= money($totalDebtSum) ?></div>
+                <div class="text-sm muted mt-1"><?= $debtorsCount ?> <?= $debtorsCount === 1 ? 'customer' : 'customers' ?> owing</div>
+            </a>
+        </section>
+
+        <div class="grid grid-cols-1 xl:grid-cols-3 gap-5">
+            <!-- Chart -->
+            <section class="card card-pad xl:col-span-2">
+                <div class="flex items-start justify-between gap-4 mb-6">
+                    <div>
+                        <h2 class="section-title">Sales, last 14 days</h2>
+                        <p class="muted text-sm mt-0.5"><?= money($chartTotal) ?> total · <?= money($chartTotal / $days) ?> per day on average</p>
+                    </div>
+                </div>
+                <div class="bars" role="img" aria-label="Daily sales for the last 14 days">
+                    <?php $i = 0; foreach ($series as $day => $amt): $isToday = $i === $days - 1; $i++; ?>
+                        <div class="bar-wrap" title="<?= e(date('D j M', strtotime($day))) ?> · <?= e($currency) ?> <?= number_format($amt, 2) ?>">
+                            <div class="bar <?= $isToday ? 'today' : '' ?>" style="height: <?= max(2, round($amt / $maxDay * 100)) ?>%"></div>
+                        </div>
+                    <?php endforeach; ?>
+                </div>
+                <div class="flex justify-between text-xs subtle mt-3 tnum">
+                    <span><?= date('j M', strtotime('today -13 days')) ?></span><span><?= date('j M', strtotime('today -7 days')) ?></span><span>Today</span>
+                </div>
+            </section>
+
+            <!-- Top products -->
+            <section class="card card-pad">
+                <h2 class="section-title">Best sellers this month</h2>
+                <?php if (empty($topProducts)): ?>
+                    <p class="muted text-sm mt-6">Sell something this month to see your best sellers here.</p>
+                <?php else: $topMax = max($topProducts); ?>
+                    <ul class="mt-5 space-y-4">
+                        <?php foreach ($topProducts as $name => $amt): ?>
+                            <li>
+                                <div class="flex justify-between gap-3 text-sm"><span class="font-medium truncate"><?= e($name) ?></span><span class="tnum font-semibold"><?= money($amt) ?></span></div>
+                                <div class="h-2 rounded-full mt-2" style="background:var(--surface-2)"><div class="h-2 rounded-full" style="width:<?= max(4, round($amt / $topMax * 100)) ?>%;background:var(--primary)"></div></div>
+                            </li>
+                        <?php endforeach; ?>
+                    </ul>
+                <?php endif; ?>
+            </section>
+
+            <!-- Recent sales -->
+            <section class="card xl:col-span-2 overflow-hidden">
+                <div class="flex items-center justify-between card-pad pb-3">
+                    <h2 class="section-title">Recent sales</h2>
+                    <a href="index.php?tab=sales" class="btn btn-ghost btn-sm">View all <?= icon('arrowRight', 'ic-sm') ?></a>
+                </div>
+                <?php if (empty($recentSales)): ?>
+                    <div class="px-6 pb-10 pt-4 text-center">
+                        <p class="font-semibold">No sales yet</p>
+                        <p class="muted text-sm mt-1">Your first sale will show up here.</p>
+                        <a href="index.php?tab=new_sale" class="btn btn-primary mt-4"><?= icon('plus', 'ic-sm') ?> Record a sale</a>
+                    </div>
+                <?php else: ?>
+                    <ul>
+                        <?php foreach ($recentSales as $s): [$stLabel, $stTone] = saleStatus($s); ?>
+                            <li class="divider">
+                                <a href="index.php?tab=sales&open=<?= (int)$s['id'] ?>" class="flex items-center gap-3 px-5 lg:px-6 py-3.5 transition hover:bg-[var(--surface-2)]">
+                                    <span class="avatar bg-tone-<?= avatarTone((string)$s['customerName']) ?>"><?= e(initials((string)$s['customerName'])) ?></span>
+                                    <span class="min-w-0 flex-1">
+                                        <span class="block font-semibold truncate"><?= e($s['customerName'] ?: 'Walk-in customer') ?></span>
+                                        <span class="block text-sm muted truncate">#<?= e($s['invoiceNumber']) ?> · <?= fmtDate($s['timestamp'], 'j M, H:i') ?></span>
+                                    </span>
+                                    <span class="text-right">
+                                        <span class="block font-semibold tnum"><?= money($s['totalAmount']) ?></span>
+                                        <span class="badge tone-<?= $stTone ?> mt-1"><?= $stLabel ?></span>
+                                    </span>
+                                </a>
+                            </li>
+                        <?php endforeach; ?>
+                    </ul>
+                <?php endif; ?>
+            </section>
+
+            <div class="space-y-5">
+                <!-- Who owes -->
+                <section class="card overflow-hidden">
+                    <div class="flex items-center justify-between card-pad pb-3">
+                        <h2 class="section-title">Who owes you</h2>
+                        <a href="index.php?tab=customers&filter=owing" class="btn btn-ghost btn-sm">All <?= icon('arrowRight', 'ic-sm') ?></a>
+                    </div>
+                    <?php if (empty($topDebtors)): ?>
+                        <div class="px-6 pb-6 flex items-center gap-3"><span class="tile bg-tone-success"><?= icon('checkCircle', 'ic-sm') ?></span><p class="text-sm">Nobody owes you. Every account is settled.</p></div>
+                    <?php else: ?>
+                        <ul>
+                            <?php foreach ($topDebtors as $d): $bal = (float)($d['currentBalance'] ?: $d['totalDebt']); ?>
+                                <li class="divider flex items-center gap-3 px-5 lg:px-6 py-3">
+                                    <span class="avatar bg-tone-<?= avatarTone($d['name']) ?>" style="width:36px;height:36px;font-size:13px"><?= e(initials($d['name'])) ?></span>
+                                    <span class="min-w-0 flex-1">
+                                        <span class="block font-medium truncate"><?= e($d['name']) ?></span>
+                                        <span class="block text-sm text-danger font-semibold tnum"><?= money($bal) ?></span>
+                                    </span>
+                                    <button type="button" class="btn btn-secondary btn-sm" data-pay='<?= jsonAttr(['id' => (int)$d['id'], 'name' => $d['name'], 'balance' => $bal, 'return' => 'dashboard']) ?>'>Collect</button>
+                                </li>
+                            <?php endforeach; ?>
+                        </ul>
+                    <?php endif; ?>
+                </section>
+
+                <!-- Low stock -->
+                <section class="card overflow-hidden">
+                    <div class="flex items-center justify-between card-pad pb-3">
+                        <h2 class="section-title">Running low</h2>
+                        <a href="index.php?tab=products&stock=low" class="btn btn-ghost btn-sm">All <?= icon('arrowRight', 'ic-sm') ?></a>
+                    </div>
+                    <?php if (empty($lowStock)): ?>
+                        <div class="px-6 pb-6 flex items-center gap-3"><span class="tile bg-tone-success"><?= icon('checkCircle', 'ic-sm') ?></span><p class="text-sm">Everything is well stocked.</p></div>
+                    <?php else: ?>
+                        <ul>
+                            <?php foreach ($lowStock as $p): $out = (float)$p['stockQuantity'] <= 0; ?>
+                                <li class="divider flex items-center gap-3 px-5 lg:px-6 py-3">
+                                    <span class="min-w-0 flex-1 font-medium truncate"><?= e($p['name']) ?></span>
+                                    <span class="badge tone-<?= $out ? 'danger' : 'warning' ?> tnum"><?= $out ? 'Out' : fmtQty($p['stockQuantity']) . ' ' . e($p['unit']) ?></span>
+                                </li>
+                            <?php endforeach; ?>
+                        </ul>
+                    <?php endif; ?>
+                </section>
+            </div>
+        </div>
+
+<?php
+// =====================================================================
+// NEW SALE (POS)
+// =====================================================================
+elseif ($tab === 'new_sale'):
+    $posProducts = array_map(fn($p) => [
+        'id' => (int)$p['id'], 'name' => (string)$p['name'], 'category' => (string)$p['category'],
+        'categoryLabel' => categoryLabel((string)$p['category']), 'unit' => (string)$p['unit'],
+        'price' => (float)$p['unitPrice'], 'stock' => (float)$p['stockQuantity'], 'min' => (float)$p['minStockThreshold'],
+    ], $allProducts);
+    $posCustomers = array_map(fn($c) => [
+        'id' => (int)$c['id'], 'name' => (string)$c['name'], 'phone' => (string)$c['phone'],
+        'balance' => (float)($c['currentBalance'] ?: $c['totalDebt']),
+    ], $allCustomers);
+    $posCategories = [];
+    foreach ($allProducts as $p) $posCategories[$p['category']] = categoryLabel((string)$p['category']);
+    asort($posCategories);
+?>
+        <?php pageHeader('New sale', 'Tap items to add them, then take payment.'); ?>
+
+        <form method="POST" action="index.php" id="saleForm" class="grid grid-cols-1 lg:grid-cols-5 gap-6 items-start" novalidate>
+            <?= csrfField() ?>
+            <input type="hidden" name="action" value="create_sale">
+
+            <!-- Catalog -->
+            <section class="lg:col-span-3 space-y-4" aria-label="Products">
+                <div class="search input-icon">
+                    <?= icon('search', 'ic-sm') ?>
+                    <input type="search" id="posSearch" class="input" placeholder="Search products   ( / )" aria-label="Search products" autocomplete="off">
+                </div>
+                <?php if (count($posCategories) > 1): ?>
+                    <div class="scroll-x flex gap-2" role="group" aria-label="Filter by category" id="posCats">
+                        <button type="button" class="chip" aria-pressed="true" data-cat="">All</button>
+                        <?php foreach ($posCategories as $key => $label): ?>
+                            <button type="button" class="chip" aria-pressed="false" data-cat="<?= e($key) ?>"><?= e($label) ?></button>
+                        <?php endforeach; ?>
+                    </div>
+                <?php endif; ?>
+
+                <?php if (empty($posProducts)): ?>
+                    <div class="card card-pad text-center py-14">
+                        <div class="tile bg-tone-primary mx-auto mb-3" style="width:56px;height:56px;border-radius:999px"><?= icon('box', 'ic-lg') ?></div>
+                        <p class="font-semibold">No products yet</p>
+                        <p class="muted text-sm mt-1">Add the goods or services you sell first.</p>
+                        <a href="index.php?tab=products&add=1" class="btn btn-primary mt-4"><?= icon('plus', 'ic-sm') ?> Add a product</a>
+                    </div>
+                <?php else: ?>
+                    <div id="posGrid" class="grid grid-cols-2 sm:grid-cols-3 gap-3"></div>
+                    <p id="posNoMatch" class="hidden text-center muted py-10">No products match your search.</p>
+                <?php endif; ?>
+            </section>
+
+            <!-- Cart & checkout -->
+            <section class="lg:col-span-2 lg:sticky lg:top-6 space-y-4" aria-label="Checkout">
+                <div class="card card-pad space-y-4">
+                    <div class="flex items-center justify-between">
+                        <h2 class="section-title">Customer</h2>
+                        <span id="custDebtBadge" class="badge tone-danger hidden"></span>
+                    </div>
+                    <div>
+                        <label class="label" for="custSelect">Saved customer</label>
+                        <select id="custSelect" name="customer_id" class="input">
+                            <option value="0">Walk-in / new customer</option>
+                            <?php foreach ($posCustomers as $c): ?>
+                                <option value="<?= $c['id'] ?>"><?= e($c['name']) ?><?= $c['balance'] > 0.009 ? ' · owes ' . e($currency) . ' ' . number_format($c['balance'], 2) : '' ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label class="label" for="custName">Name</label>
+                            <input id="custName" name="customer_name" class="input" value="Walk-in customer" required autocomplete="off">
+                        </div>
+                        <div>
+                            <label class="label" for="custPhone">Phone</label>
+                            <input id="custPhone" name="customer_phone" class="input" inputmode="tel" placeholder="Optional" autocomplete="off">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card card-pad">
+                    <div class="flex items-center justify-between mb-3">
+                        <h2 class="section-title">Cart <span id="cartCount" class="muted font-medium"></span></h2>
+                        <button type="button" id="clearCart" class="btn btn-ghost btn-sm hidden">Clear</button>
+                    </div>
+                    <div id="cartEmpty" class="text-center py-8">
+                        <div class="tile bg-tone-neutral mx-auto mb-3" style="width:48px;height:48px;border-radius:999px"><?= icon('cart', 'ic') ?></div>
+                        <p class="muted text-sm">Nothing here yet. Tap a product to add it.</p>
+                    </div>
+                    <ul id="cartList" class="space-y-3"></ul>
+
+                    <div id="checkout" class="hidden mt-5 pt-5 divider space-y-4">
+                        <div class="grid grid-cols-2 gap-3">
+                            <div>
+                                <label class="label" for="discount">Discount</label>
+                                <input id="discount" name="discount_amount" type="number" min="0" step="0.01" class="input tnum" placeholder="0.00" inputmode="decimal">
+                            </div>
+                            <div>
+                                <label class="label" for="paid">Amount paid</label>
+                                <input id="paid" name="amount_paid" type="number" min="0" step="0.01" class="input tnum" inputmode="decimal">
+                            </div>
+                        </div>
+                        <div class="scroll-x flex gap-2" role="group" aria-label="Payment presets">
+                            <button type="button" class="chip" data-paid="full">Paid in full</button>
+                            <button type="button" class="chip" data-paid="half">50% deposit</button>
+                            <button type="button" class="chip" data-paid="none">On credit</button>
+                        </div>
+                        <div>
+                            <span class="label">Payment method</span>
+                            <div class="seg w-full" role="radiogroup" aria-label="Payment method">
+                                <?php $first = true; foreach ($PAYMENT_METHODS as $val => $label): ?>
+                                    <label><input type="radio" name="payment_method" value="<?= $val ?>" <?= $first ? 'checked' : '' ?>><?= e($label) ?></label>
+                                <?php $first = false; endforeach; ?>
+                            </div>
+                        </div>
+                        <div>
+                            <label class="label" for="saleNotes">Note</label>
+                            <input id="saleNotes" name="notes" class="input" placeholder="Optional · delivery details, reference…">
+                        </div>
+
+                        <dl class="soft p-4 space-y-2 text-sm tnum">
+                            <div class="flex justify-between"><dt class="muted">Subtotal</dt><dd id="sumSubtotal"></dd></div>
+                            <div class="flex justify-between" id="rowDiscount"><dt class="muted">Discount</dt><dd id="sumDiscount" class="text-warning"></dd></div>
+                            <div class="flex justify-between items-baseline pt-2 divider"><dt class="font-semibold">Total</dt><dd id="sumTotal" class="text-2xl font-extrabold"></dd></div>
+                            <div id="sumStatus" class="pt-1"></div>
+                        </dl>
+
+                        <button type="submit" id="chargeBtn" class="btn btn-primary btn-lg w-full"></button>
+                    </div>
+                </div>
+            </section>
+        </form>
+
+        <script>
+        (function () {
+            const products = <?= json_encode($posProducts, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+            const customers = <?= json_encode($posCustomers, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+            const cur = <?= json_encode($currency) ?>;
+            const fmt = n => cur + ' ' + (Math.round(n * 100) / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            const qtyFmt = n => (Math.round(n * 100) / 100).toString();
+            const cart = new Map(); // id -> { product, qty, price }
+            let category = '', query = '', paidTouched = false;
+
+            const grid = document.getElementById('posGrid');
+            const el = id => document.getElementById(id);
+
+            function tile(p) {
+                const b = document.createElement('button');
+                b.type = 'button';
+                b.className = 'product-tile';
+                b.dataset.id = p.id;
+                const low = p.stock <= p.min, out = p.stock <= 0;
+                b.innerHTML = '<div class="flex items-start justify-between gap-2 mb-3"><span class="tile bg-tone-primary"></span><span class="badge"></span></div>'
+                    + '<div class="font-semibold leading-snug line-clamp-2" style="min-height:2.6em"></div>'
+                    + '<div class="mt-1 text-sm"><span class="font-bold tnum price"></span><span class="muted unit"></span></div>'
+                    + '<span class="qty-pill badge tone-primary hidden" style="position:absolute;bottom:12px;right:12px"></span>';
+                b.querySelector('.tile').textContent = p.name.trim().charAt(0).toUpperCase() || '•';
+                const badge = b.querySelector('.badge');
+                badge.textContent = out ? 'Out' : qtyFmt(p.stock) + ' left';
+                badge.classList.add(out ? 'tone-danger' : (low ? 'tone-warning' : 'tone-neutral'));
+                b.children[1].textContent = p.name;
+                b.querySelector('.price').textContent = fmt(p.price);
+                b.querySelector('.unit').textContent = ' / ' + p.unit;
+                b.setAttribute('aria-label', 'Add ' + p.name + ', ' + fmt(p.price) + ' per ' + p.unit);
+                b.addEventListener('click', () => add(p));
+                return b;
+            }
+
+            function renderGrid() {
+                if (!grid) return;
+                const q = query.toLowerCase();
+                let shown = 0;
+                grid.querySelectorAll('.product-tile').forEach(b => {
+                    const p = products.find(x => x.id == b.dataset.id);
+                    const ok = (!category || p.category === category) && (!q || p.name.toLowerCase().includes(q));
+                    b.classList.toggle('hidden', !ok);
+                    if (ok) shown++;
+                    const line = cart.get(p.id);
+                    b.classList.toggle('in-cart', !!line);
+                    const pill = b.querySelector('.qty-pill');
+                    pill.classList.toggle('hidden', !line);
+                    if (line) pill.textContent = '× ' + qtyFmt(line.qty);
+                });
+                el('posNoMatch').classList.toggle('hidden', shown > 0);
+            }
+
+            function add(p, delta = 1) {
+                const line = cart.get(p.id) || { product: p, qty: 0, price: p.price };
+                line.qty = Math.max(0, Math.round((line.qty + delta) * 100) / 100);
+                if (line.qty <= 0) cart.delete(p.id); else cart.set(p.id, line);
+                render();
+            }
+
+            function render() {
+                const list = el('cartList');
+                list.innerHTML = '';
+                let subtotal = 0, count = 0;
+                cart.forEach(line => {
+                    const p = line.product, total = line.qty * line.price;
+                    subtotal += total; count += line.qty;
+                    const li = document.createElement('li');
+                    li.className = 'flex items-center gap-3';
+                    li.innerHTML = '<div class="min-w-0 flex-1"><div class="font-medium truncate"></div>'
+                        + '<div class="text-sm muted flex items-center gap-1 mt-0.5"><span>' + cur + '</span><input type="number" step="0.01" min="0" class="price-in tnum bg-transparent w-20 rounded px-1" aria-label="Unit price"><span class="unit"></span></div>'
+                        + '<div class="stock-warn text-xs text-warning mt-0.5 hidden"></div></div>'
+                        + '<div class="stepper"><button type="button" class="dec" aria-label="Decrease">' + <?= json_encode(icon('minus', 'ic-sm')) ?> + '</button>'
+                        + '<input type="number" min="0" step="any" class="qty-in" aria-label="Quantity"><button type="button" class="inc" aria-label="Increase">' + <?= json_encode(icon('plus', 'ic-sm')) ?> + '</button></div>'
+                        + '<div class="w-24 text-right font-semibold tnum line-total"></div>'
+                        + '<input type="hidden" name="item_product_id[]"><input type="hidden" name="item_quantity[]"><input type="hidden" name="item_price[]">';
+                    li.querySelector('.font-medium').textContent = p.name;
+                    li.querySelector('.unit').textContent = '/ ' + p.unit;
+                    const priceIn = li.querySelector('.price-in'); priceIn.value = line.price.toFixed(2);
+                    const qtyIn = li.querySelector('.qty-in'); qtyIn.value = qtyFmt(line.qty);
+                    li.querySelector('.line-total').textContent = fmt(total);
+                    const hidden = li.querySelectorAll('input[type=hidden]');
+                    hidden[0].value = p.id; hidden[1].value = line.qty; hidden[2].value = line.price;
+                    if (line.qty > p.stock) {
+                        const w = li.querySelector('.stock-warn');
+                        w.textContent = 'Only ' + qtyFmt(Math.max(0, p.stock)) + ' in stock';
+                        w.classList.remove('hidden');
+                    }
+                    li.querySelector('.dec').onclick = () => add(p, -1);
+                    li.querySelector('.inc').onclick = () => add(p, 1);
+                    qtyIn.onchange = () => { const v = parseFloat(qtyIn.value) || 0; add(p, v - line.qty); };
+                    priceIn.onchange = () => { line.price = Math.max(0, parseFloat(priceIn.value) || 0); render(); };
+                    list.appendChild(li);
+                });
+
+                const has = cart.size > 0;
+                el('cartEmpty').classList.toggle('hidden', has);
+                el('checkout').classList.toggle('hidden', !has);
+                el('clearCart').classList.toggle('hidden', !has);
+                el('cartCount').textContent = has ? '· ' + qtyFmt(count) + (count === 1 ? ' item' : ' items') : '';
+
+                const discount = Math.min(subtotal, Math.max(0, parseFloat(el('discount').value) || 0));
+                const total = Math.max(0, subtotal - discount);
+                if (!paidTouched) el('paid').value = total.toFixed(2);
+                const paid = Math.max(0, parseFloat(el('paid').value) || 0);
+                const due = Math.max(0, total - paid), change = Math.max(0, paid - total);
+
+                el('sumSubtotal').textContent = fmt(subtotal);
+                el('rowDiscount').classList.toggle('hidden', discount <= 0);
+                el('sumDiscount').textContent = '− ' + fmt(discount);
+                el('sumTotal').textContent = fmt(total);
+                const status = el('sumStatus');
+                status.innerHTML = '';
+                const b = document.createElement('span');
+                b.className = 'badge';
+                if (due > 0.009) {
+                    const sel = customers.find(c => c.id == el('custSelect').value);
+                    b.classList.add('tone-danger');
+                    b.textContent = 'Balance due ' + fmt(due) + (sel ? '' : ' · pick a saved customer to track it');
+                } else if (change > 0.009) {
+                    b.classList.add('tone-warning'); b.textContent = 'Give change ' + fmt(change);
+                } else {
+                    b.classList.add('tone-success'); b.textContent = 'Paid in full';
+                }
+                status.appendChild(b);
+                el('chargeBtn').innerHTML = <?= json_encode(icon('check', 'ic-sm')) ?> + ' <span></span>';
+                el('chargeBtn').querySelector('span').textContent = (due > 0.009 ? 'Record sale · ' : 'Charge ') + fmt(total);
+                document.querySelectorAll('[data-paid]').forEach(c => {
+                    const v = c.dataset.paid;
+                    const on = (v === 'full' && Math.abs(paid - total) < .005) || (v === 'half' && Math.abs(paid - total / 2) < .005 && total > 0) || (v === 'none' && paid === 0);
+                    c.setAttribute('aria-pressed', on ? 'true' : 'false');
+                });
+                renderGrid();
+            }
+
+            if (grid) {
+                products.forEach(p => grid.appendChild(tile(p)));
+                el('posSearch').addEventListener('input', e => { query = e.target.value; renderGrid(); });
+                document.querySelectorAll('#posCats .chip').forEach(c => c.addEventListener('click', () => {
+                    category = c.dataset.cat;
+                    document.querySelectorAll('#posCats .chip').forEach(x => x.setAttribute('aria-pressed', x === c ? 'true' : 'false'));
+                    renderGrid();
+                }));
+            }
+            el('discount').addEventListener('input', render);
+            el('paid').addEventListener('input', () => { paidTouched = true; render(); });
+            document.querySelectorAll('[data-paid]').forEach(c => c.addEventListener('click', () => {
+                const sub = [...cart.values()].reduce((s, l) => s + l.qty * l.price, 0);
+                const total = Math.max(0, sub - Math.min(sub, parseFloat(el('discount').value) || 0));
+                el('paid').value = (c.dataset.paid === 'full' ? total : c.dataset.paid === 'half' ? total / 2 : 0).toFixed(2);
+                paidTouched = true; render();
+            }));
+            el('clearCart').addEventListener('click', () => { cart.clear(); paidTouched = false; render(); });
+            el('custSelect').addEventListener('change', e => {
+                const c = customers.find(x => x.id == e.target.value);
+                el('custName').value = c ? c.name : 'Walk-in customer';
+                el('custPhone').value = c ? c.phone : '';
+                el('custName').readOnly = !!c;
+                const badge = el('custDebtBadge');
+                badge.classList.toggle('hidden', !(c && c.balance > 0.009));
+                if (c) badge.textContent = 'Owes ' + fmt(c.balance);
+                render();
+            });
+            el('saleForm').addEventListener('submit', e => {
+                if (cart.size === 0) { e.preventDefault(); showToast('Add at least one item first.', 'danger'); return; }
+                if (!el('custName').value.trim()) { e.preventDefault(); el('custName').focus(); showToast('Enter the customer name.', 'danger'); return; }
+                el('chargeBtn').disabled = true; // prevent double submit
+                el('chargeBtn').textContent = 'Saving…';
+            });
+            render();
+        })();
+        </script>
+
+<?php
+// =====================================================================
+// SALES
+// =====================================================================
+elseif ($tab === 'sales'):
+    $allSales = $db->query("SELECT * FROM sales_orders ORDER BY timestamp DESC")->fetchAll();
+    $openId = (int)($_GET['open'] ?? 0);
+    $statusCounts = ['Paid' => 0, 'Partial' => 0, 'Unpaid' => 0];
+    foreach ($allSales as $s) $statusCounts[saleStatus($s)[0]]++;
+?>
+        <?php pageHeader('Sales', count($allSales) . ' invoices · ' . money($totalSalesSum) . ' in total',
+            '<a href="index.php?tab=new_sale" class="btn btn-primary">' . icon('plus', 'ic-sm') . ' New sale</a>'); ?>
+
+        <div class="flex flex-col md:flex-row gap-3 mb-4" data-filters="salesTable">
+            <div class="search input-icon flex-1">
+                <?= icon('search', 'ic-sm') ?>
+                <input type="search" class="input" data-filter-search placeholder="Search customer, invoice or item   ( / )" aria-label="Search sales">
+            </div>
+            <select class="input md:w-44" data-filter-key="period" aria-label="Date range">
+                <option value="">All time</option>
+                <option value="today">Today</option>
+                <option value="7">Last 7 days</option>
+                <option value="30">Last 30 days</option>
+            </select>
+            <div class="seg" role="group" aria-label="Payment status" data-filter-key="status">
+                <button type="button" aria-pressed="true" data-value="">All</button>
+                <?php foreach ($statusCounts as $label => $n): ?>
+                    <button type="button" aria-pressed="false" data-value="<?= $label ?>"><?= $label ?> <span class="subtle tnum"><?= $n ?></span></button>
+                <?php endforeach; ?>
+            </div>
+        </div>
+
+        <div class="card overflow-hidden">
+            <div class="overflow-x-auto">
+                <table class="table" id="salesTable">
+                    <thead><tr><th class="opt">Invoice</th><th>Customer</th><th class="opt">Date</th><th class="num">Total</th><th class="num opt">Balance</th><th>Status</th></tr></thead>
+                    <tbody>
+                    <?php if (empty($allSales)): ?>
+                        <?= emptyRow(6, 'receipt', 'No sales yet', 'Record a sale and it will appear here.') ?>
+                    <?php else: foreach ($allSales as $s):
+                        [$stLabel, $stTone] = saleStatus($s);
+                        $items = json_decode((string)$s['itemsJson'], true) ?: [];
+                        $itemText = implode(' ', array_map(fn($i) => (string)($i['productName'] ?? ''), $items));
+                        $order = [
+                            'id' => (int)$s['id'], 'invoice' => $s['invoiceNumber'], 'customer' => $s['customerName'], 'phone' => $s['customerPhone'],
+                            'date' => fmtDate($s['timestamp'], 'j M Y, H:i'), 'items' => array_map(fn($i) => [
+                                'name' => (string)($i['productName'] ?? 'Item'), 'qty' => (float)($i['quantity'] ?? 0),
+                                'unit' => (string)($i['unit'] ?? ''), 'price' => (float)($i['unitPrice'] ?? 0), 'total' => (float)($i['lineTotal'] ?? 0)], $items),
+                            'discount' => (float)$s['discountAmount'], 'total' => (float)$s['totalAmount'], 'paid' => (float)$s['amountPaid'],
+                            'balance' => (float)$s['balanceDue'], 'status' => $stLabel, 'tone' => $stTone, 'method' => methodLabel((string)$s['paymentMethod']),
+                            'notes' => (string)($s['notes'] ?? ''),
+                        ];
+                    ?>
+                        <tr class="clickable" tabindex="0" data-order='<?= jsonAttr($order) ?>' data-status="<?= $stLabel ?>" data-ts="<?= (int)$s['timestamp'] ?>"
+                            data-search="<?= e(strtolower($s['invoiceNumber'] . ' ' . $s['customerName'] . ' ' . $s['customerPhone'] . ' ' . $itemText)) ?>" <?= $openId === (int)$s['id'] ? 'data-autopen="1"' : '' ?>>
+                            <td class="font-semibold whitespace-nowrap opt">#<?= e($s['invoiceNumber']) ?></td>
+                            <td>
+                                <div class="flex items-center gap-3">
+                                    <span class="avatar bg-tone-<?= avatarTone((string)$s['customerName']) ?>" style="width:34px;height:34px;font-size:12px"><?= e(initials((string)$s['customerName'])) ?></span>
+                                    <div class="min-w-0">
+                                        <div class="font-medium truncate max-w-[220px]"><?= e($s['customerName'] ?: 'Walk-in customer') ?></div>
+                                        <div class="text-xs muted truncate max-w-[220px]"><?= e(count($items) . ' ' . (count($items) === 1 ? 'item' : 'items') . ($items ? ' · ' . ($items[0]['productName'] ?? '') . (count($items) > 1 ? ' +' . (count($items) - 1) : '') : '')) ?></div>
+                                    </div>
+                                </div>
+                            </td>
+                            <td class="muted whitespace-nowrap opt"><?= fmtDate($s['timestamp'], 'j M Y, H:i') ?></td>
+                            <td class="num font-semibold"><?= money($s['totalAmount']) ?></td>
+                            <td class="num opt <?= (float)$s['balanceDue'] > 0.009 ? 'text-danger font-semibold' : 'subtle' ?>"><?= (float)$s['balanceDue'] > 0.009 ? money($s['balanceDue']) : '—' ?></td>
+                            <td><span class="badge tone-<?= $stTone ?>"><?= $stLabel ?></span></td>
+                        </tr>
+                    <?php endforeach; ?>
+                        <?= noMatchRow(6) ?>
+                    <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
+            <?php if (!empty($allSales)): ?>
+                <div class="divider px-5 py-3 text-sm muted flex justify-between" data-summary="salesTable"><span></span><span class="tnum font-semibold" style="color:var(--text)"></span></div>
+            <?php endif; ?>
+        </div>
+
+        <!-- Receipt -->
+        <div class="modal" id="receiptModal" role="dialog" aria-modal="true" aria-labelledby="rcptTitle">
+            <div class="modal-panel">
+                <div class="p-6 sm:p-8">
+                    <div class="flex items-start justify-between gap-4">
+                        <div>
+                            <div class="caption"><?= e($settings['businessName']) ?></div>
+                            <h2 id="rcptTitle" class="text-2xl font-extrabold mt-1 tracking-tight"></h2>
+                            <p id="rcptDate" class="muted text-sm mt-0.5"></p>
+                        </div>
+                        <button type="button" class="icon-btn no-print" data-close aria-label="Close"><?= icon('x', 'ic-sm') ?></button>
+                    </div>
+                    <div class="soft p-4 mt-5 flex items-center gap-3">
+                        <span id="rcptAvatar" class="avatar bg-tone-primary"></span>
+                        <div class="min-w-0"><div id="rcptCustomer" class="font-semibold truncate"></div><div id="rcptPhone" class="text-sm muted"></div></div>
+                        <span id="rcptStatus" class="badge ml-auto"></span>
+                    </div>
+                    <table class="w-full text-sm mt-5 tnum">
+                        <thead><tr class="muted text-xs"><th class="text-left font-semibold pb-2">Item</th><th class="text-right font-semibold pb-2">Qty</th><th class="text-right font-semibold pb-2">Amount</th></tr></thead>
+                        <tbody id="rcptItems"></tbody>
+                    </table>
+                    <dl class="mt-4 pt-4 divider space-y-2 text-sm tnum">
+                        <div class="flex justify-between" id="rcptDiscRow"><dt class="muted">Discount</dt><dd id="rcptDisc"></dd></div>
+                        <div class="flex justify-between text-base"><dt class="font-semibold">Total</dt><dd id="rcptTotal" class="font-extrabold"></dd></div>
+                        <div class="flex justify-between"><dt class="muted">Paid · <span id="rcptMethod"></span></dt><dd id="rcptPaid"></dd></div>
+                        <div class="flex justify-between" id="rcptBalRow"><dt class="font-semibold text-danger">Balance due</dt><dd id="rcptBal" class="font-bold text-danger"></dd></div>
+                    </dl>
+                    <p id="rcptNotes" class="soft p-3 text-sm mt-4 hidden"></p>
+                    <p class="text-center text-xs subtle mt-6">Thank you for your business<?= $settings['businessPhone'] ? ' · ' . e($settings['businessPhone']) : '' ?></p>
+                    <div class="flex gap-2 mt-6 no-print">
+                        <button type="button" class="btn btn-secondary flex-1" onclick="window.print()"><?= icon('printer', 'ic-sm') ?> Print</button>
+                        <a id="rcptWhatsapp" class="btn btn-success flex-1" target="_blank" rel="noopener"><?= icon('chat', 'ic-sm') ?> WhatsApp</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <script>
+        (function () {
+            const cur = <?= json_encode($currency) ?>, biz = <?= json_encode($settings['businessName']) ?>;
+            const fmt = n => cur + ' ' + Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            const $ = id => document.getElementById(id);
+            function open(o) {
+                $('rcptTitle').textContent = 'Receipt #' + o.invoice;
+                $('rcptDate').textContent = o.date;
+                $('rcptCustomer').textContent = o.customer || 'Walk-in customer';
+                $('rcptPhone').textContent = o.phone || '';
+                $('rcptAvatar').textContent = (o.customer || '?').trim().split(/\s+/).slice(0, 2).map(w => w[0]).join('').toUpperCase();
+                const st = $('rcptStatus'); st.className = 'badge ml-auto tone-' + o.tone; st.textContent = o.status;
+                const body = $('rcptItems'); body.innerHTML = '';
+                o.items.forEach(i => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = '<td class="py-1.5 pr-2"><div class="font-medium"></div><div class="text-xs muted"></div></td><td class="py-1.5 text-right whitespace-nowrap"></td><td class="py-1.5 text-right whitespace-nowrap font-medium"></td>';
+                    tr.querySelector('.font-medium').textContent = i.name;
+                    tr.querySelector('.text-xs').textContent = fmt(i.price) + (i.unit ? ' / ' + i.unit : '');
+                    tr.children[1].textContent = (Math.round(i.qty * 100) / 100);
+                    tr.children[2].textContent = fmt(i.total);
+                    body.appendChild(tr);
+                });
+                $('rcptDiscRow').classList.toggle('hidden', !(o.discount > 0));
+                $('rcptDisc').textContent = '− ' + fmt(o.discount);
+                $('rcptTotal').textContent = fmt(o.total);
+                $('rcptPaid').textContent = fmt(o.paid);
+                $('rcptMethod').textContent = o.method;
+                $('rcptBalRow').classList.toggle('hidden', !(o.balance > 0.009));
+                $('rcptBal').textContent = fmt(o.balance);
+                $('rcptNotes').classList.toggle('hidden', !o.notes);
+                $('rcptNotes').textContent = o.notes;
+                const lines = ['*' + biz + '* · Receipt #' + o.invoice, o.date, ''].concat(o.items.map(i => (Math.round(i.qty * 100) / 100) + ' × ' + i.name + ' = ' + fmt(i.total)))
+                    .concat(['', 'Total: ' + fmt(o.total), 'Paid: ' + fmt(o.paid)]).concat(o.balance > 0.009 ? ['Balance due: ' + fmt(o.balance)] : []).concat(['', 'Thank you for your business!']);
+                const phone = (o.phone || '').replace(/\D/g, '').replace(/^0/, '233');
+                $('rcptWhatsapp').href = 'https://wa.me/' + phone + '?text=' + encodeURIComponent(lines.join('\n'));
+                openModal('receiptModal');
+            }
+            document.querySelectorAll('#salesTable tr[data-order]').forEach(tr => {
+                const o = JSON.parse(tr.dataset.order);
+                tr.addEventListener('click', () => open(o));
+                tr.addEventListener('keydown', e => { if (e.key === 'Enter') open(o); });
+                if (tr.dataset.autopen) setTimeout(() => open(o), 150);
+            });
+        })();
+        </script>
+
+<?php
+// =====================================================================
+// PRODUCTS
+// =====================================================================
+elseif ($tab === 'products'):
+    $stockFilter = in_array($_GET['stock'] ?? '', ['low', 'out'], true) ? $_GET['stock'] : '';
+    $catsInUse = [];
+    foreach ($allProducts as $p) $catsInUse[$p['category']] = categoryLabel((string)$p['category']);
+    asort($catsInUse);
+    $stockValue = array_sum(array_map(fn($p) => max(0, (float)$p['stockQuantity']) * (float)$p['unitPrice'], $allProducts));
+    $outCount = count(array_filter($allProducts, fn($p) => (float)$p['stockQuantity'] <= 0));
+    $lowOnly = $lowStockCount - $outCount;
+?>
+        <?php pageHeader('Products', $totalProductsCount . ' items · stock worth ' . money($stockValue) . ' at selling price',
+            '<button type="button" class="btn btn-primary" data-product-new>' . icon('plus', 'ic-sm') . ' Add product</button>'); ?>
+
+        <div class="flex flex-col md:flex-row gap-3 mb-4" data-filters="productsTable">
+            <div class="search input-icon flex-1">
+                <?= icon('search', 'ic-sm') ?>
+                <input type="search" class="input" data-filter-search placeholder="Search products   ( / )" aria-label="Search products">
+            </div>
+            <?php if (count($catsInUse) > 1): ?>
+                <select class="input md:w-56" data-filter-key="category" aria-label="Category">
+                    <option value="">All categories</option>
+                    <?php foreach ($catsInUse as $k => $l): ?><option value="<?= e($k) ?>"><?= e($l) ?></option><?php endforeach; ?>
+                </select>
+            <?php endif; ?>
+            <div class="seg" role="group" aria-label="Stock level" data-filter-key="stock">
+                <button type="button" aria-pressed="<?= $stockFilter === '' ? 'true' : 'false' ?>" data-value="">All</button>
+                <button type="button" aria-pressed="<?= $stockFilter === 'low' ? 'true' : 'false' ?>" data-value="low">Low <span class="subtle tnum"><?= max(0, $lowOnly) ?></span></button>
+                <button type="button" aria-pressed="<?= $stockFilter === 'out' ? 'true' : 'false' ?>" data-value="out">Out <span class="subtle tnum"><?= $outCount ?></span></button>
+            </div>
+        </div>
+
+        <div class="card overflow-hidden">
+            <div class="overflow-x-auto">
+                <table class="table" id="productsTable">
+                    <thead><tr><th>Product</th><th class="opt">Category</th><th class="num">Price</th><th class="num opt">Margin</th><th>Stock</th><th class="text-right"><span class="sr-only">Actions</span></th></tr></thead>
+                    <tbody>
+                    <?php if (empty($allProducts)): ?>
+                        <?= emptyRow(6, 'box', 'Add your first product', 'Goods or services: set a price, unit and opening stock.') ?>
+                    <?php else: foreach ($allProducts as $p):
+                        $stock = (float)$p['stockQuantity']; $min = (float)$p['minStockThreshold'];
+                        $state = $stock <= 0 ? 'out' : ($stock <= $min ? 'low' : 'ok');
+                        $price = (float)$p['unitPrice']; $cost = (float)$p['costPrice'];
+                        $margin = ($cost > 0 && $price > 0) ? (($price - $cost) / $price) * 100 : null;
+                        $pData = ['id' => (int)$p['id'], 'name' => $p['name'], 'category' => $p['category'], 'unit' => $p['unit'], 'unitPrice' => $price,
+                                  'costPrice' => $cost, 'stockQuantity' => $stock, 'minStockThreshold' => $min, 'description' => (string)($p['description'] ?? '')];
+                    ?>
+                        <tr data-search="<?= e(strtolower($p['name'] . ' ' . ($p['description'] ?? '') . ' ' . categoryLabel((string)$p['category']))) ?>" data-category="<?= e($p['category']) ?>" data-stock="<?= $state ?>">
+                            <td>
+                                <div class="flex items-center gap-3">
+                                    <span class="tile bg-tone-<?= avatarTone((string)$p['category']) ?> font-bold"><?= e(mb_strtoupper(mb_substr(trim($p['name']), 0, 1))) ?></span>
+                                    <div class="min-w-0">
+                                        <div class="font-semibold truncate max-w-[260px]"><?= e($p['name']) ?></div>
+                                        <?php if (!empty($p['description'])): ?><div class="text-xs muted truncate max-w-[260px]"><?= e($p['description']) ?></div><?php endif; ?>
+                                    </div>
+                                </div>
+                            </td>
+                            <td class="muted whitespace-nowrap opt"><?= e(categoryLabel((string)$p['category'])) ?></td>
+                            <td class="num"><span class="font-semibold"><?= money($price) ?></span><div class="text-xs muted">per <?= e($p['unit']) ?></div></td>
+                            <td class="num opt"><?= $margin === null ? '<span class="subtle">—</span>' : '<span class="' . ($margin < 0 ? 'text-danger' : '') . '">' . number_format($margin, 0) . '%</span><div class="text-xs muted">cost ' . money($cost) . '</div>' ?></td>
+                            <td>
+                                <span class="badge tone-<?= $state === 'out' ? 'danger' : ($state === 'low' ? 'warning' : 'success') ?> tnum">
+                                    <?= $state === 'out' ? 'Out of stock' : fmtQty($stock) . ' ' . e($p['unit']) ?>
+                                </span>
+                                <?php if ($state === 'low'): ?><div class="text-xs muted mt-1">alert at <?= fmtQty($min) ?></div><?php endif; ?>
+                            </td>
+                            <td class="actions">
+                                <div class="flex justify-end gap-1.5">
+                                    <button type="button" class="icon-btn tone-primary" data-stock-adjust='<?= jsonAttr($pData) ?>' aria-label="Adjust stock for <?= e($p['name']) ?>" title="Adjust stock"><?= icon('box', 'ic-sm') ?></button>
+                                    <button type="button" class="icon-btn" data-product-edit='<?= jsonAttr($pData) ?>' aria-label="Edit <?= e($p['name']) ?>" title="Edit"><?= icon('edit', 'ic-sm') ?></button>
+                                    <form method="POST" action="index.php" data-confirm="Delete “<?= e($p['name']) ?>”? Past sales keep their records, but this can't be undone." data-confirm-action="Delete product">
+                                        <?= csrfField() ?>
+                                        <input type="hidden" name="action" value="delete_product">
+                                        <input type="hidden" name="id" value="<?= (int)$p['id'] ?>">
+                                        <button type="submit" class="icon-btn tone-danger" aria-label="Delete <?= e($p['name']) ?>" title="Delete"><?= icon('trash', 'ic-sm') ?></button>
+                                    </form>
+                                </div>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                        <?= noMatchRow(6) ?>
+                    <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Product form -->
+        <div class="modal" id="productModal" role="dialog" aria-modal="true" aria-labelledby="productTitle">
+            <div class="modal-panel wide">
+                <form method="POST" action="index.php" class="p-6 sm:p-8 space-y-5">
+                    <?= csrfField() ?>
+                    <input type="hidden" name="action" value="create_product">
+                    <input type="hidden" name="id" value="">
+                    <div class="flex items-center justify-between">
+                        <h2 id="productTitle" class="text-xl font-bold">Add product</h2>
+                        <button type="button" class="icon-btn" data-close aria-label="Close"><?= icon('x', 'ic-sm') ?></button>
+                    </div>
+                    <div>
+                        <label class="label" for="p_name">Name</label>
+                        <input class="input" id="p_name" name="name" required placeholder="e.g. Bottled water 500ml, Haircut, Phone repair">
+                    </div>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div>
+                            <label class="label" for="p_category">Category</label>
+                            <select class="input" id="p_category" name="category">
+                                <?php foreach ($CATEGORIES as $k => $l): ?><option value="<?= $k ?>"><?= e($l) ?></option><?php endforeach; ?>
+                                <optgroup label="Older categories" id="p_legacy" hidden>
+                                    <?php foreach ($LEGACY_CATEGORIES as $k => $l): ?><option value="<?= $k ?>" hidden><?= e($l) ?></option><?php endforeach; ?>
+                                </optgroup>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="label" for="p_unit">Unit</label>
+                            <input class="input" id="p_unit" name="unit" list="unitList" value="Piece" placeholder="Piece, Kg, Box, Hour…">
+                            <datalist id="unitList"><?php foreach ($COMMON_UNITS as $u): ?><option value="<?= $u ?>"><?php endforeach; ?></datalist>
+                        </div>
+                        <div>
+                            <label class="label" for="p_price">Selling price (<?= e($currency) ?>)</label>
+                            <input class="input tnum" id="p_price" name="unitPrice" type="number" step="0.01" min="0" required placeholder="0.00" inputmode="decimal">
+                        </div>
+                        <div>
+                            <label class="label" for="p_cost">Cost price <span class="subtle font-normal">optional</span></label>
+                            <input class="input tnum" id="p_cost" name="costPrice" type="number" step="0.01" min="0" placeholder="0.00" inputmode="decimal">
+                            <p class="hint" id="p_margin"></p>
+                        </div>
+                        <div>
+                            <label class="label" for="p_stock">Stock on hand</label>
+                            <input class="input tnum" id="p_stock" name="stockQuantity" type="number" step="any" min="0" value="0" inputmode="decimal">
+                        </div>
+                        <div>
+                            <label class="label" for="p_min">Low-stock alert at</label>
+                            <input class="input tnum" id="p_min" name="minStockThreshold" type="number" step="any" min="0" value="5" inputmode="decimal">
+                        </div>
+                    </div>
+                    <div>
+                        <label class="label" for="p_desc">Description <span class="subtle font-normal">optional</span></label>
+                        <input class="input" id="p_desc" name="description" placeholder="Size, brand, details…">
+                    </div>
+                    <div class="flex gap-3 pt-2">
+                        <button type="button" class="btn btn-secondary flex-1" data-close>Cancel</button>
+                        <button type="submit" class="btn btn-primary flex-[2]" id="productSubmit">Add product</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Stock adjustment -->
+        <div class="modal" id="stockModal" role="dialog" aria-modal="true" aria-labelledby="stockTitle">
+            <div class="modal-panel">
+                <form method="POST" action="index.php" class="p-6 sm:p-8 space-y-5">
+                    <?= csrfField() ?>
+                    <input type="hidden" name="action" value="restock_product">
+                    <input type="hidden" name="id" value="">
+                    <div class="flex items-start justify-between gap-4">
+                        <div>
+                            <h2 id="stockTitle" class="text-xl font-bold">Adjust stock</h2>
+                            <p class="muted text-sm mt-0.5" id="stockSub"></p>
+                        </div>
+                        <button type="button" class="icon-btn" data-close aria-label="Close"><?= icon('x', 'ic-sm') ?></button>
+                    </div>
+                    <div class="seg w-full" role="radiogroup" aria-label="Direction">
+                        <label><input type="radio" name="direction" value="add" checked><?= icon('arrowUp', 'ic-sm') ?> Add stock</label>
+                        <label><input type="radio" name="direction" value="remove"><?= icon('arrowDown', 'ic-sm') ?> Remove</label>
+                    </div>
+                    <div>
+                        <label class="label" for="s_qty">Quantity</label>
+                        <input class="input input-lg tnum" id="s_qty" name="add_quantity" type="number" step="any" min="0.01" required inputmode="decimal" placeholder="0">
+                    </div>
+                    <div>
+                        <label class="label" for="s_notes">Reason <span class="subtle font-normal">optional</span></label>
+                        <input class="input" id="s_notes" name="notes" placeholder="New delivery, damaged, count correction…">
+                    </div>
+                    <div class="soft p-3 text-sm flex justify-between" id="stockPreview"><span class="muted">New stock</span><span class="font-semibold tnum"></span></div>
+                    <button type="submit" class="btn btn-primary btn-lg w-full" id="stockSubmit">Update stock</button>
+                </form>
+            </div>
+        </div>
+
+        <script>
+        (function () {
+            const cur = <?= json_encode($currency) ?>;
+            const pm = document.getElementById('productModal'), pf = pm.querySelector('form');
+            function fillProduct(p) {
+                const isNew = !p;
+                pf.action.value = isNew ? 'create_product' : 'update_product';
+                pf.id.value = isNew ? '' : p.id;
+                document.getElementById('productTitle').textContent = isNew ? 'Add product' : 'Edit product';
+                document.getElementById('productSubmit').textContent = isNew ? 'Add product' : 'Save changes';
+                pf.name.value = isNew ? '' : p.name;
+                // Older farm categories only appear when the product already uses one.
+                const legacy = document.getElementById('p_legacy');
+                const isLegacy = !isNew && ![...pf.category.options].some(o => o.value === p.category && o.parentElement.tagName !== 'OPTGROUP');
+                legacy.hidden = !isLegacy;
+                legacy.querySelectorAll('option').forEach(o => o.hidden = !(isLegacy && o.value === p.category));
+                pf.category.value = isNew ? 'GENERAL' : p.category;
+                pf.unit.value = isNew ? 'Piece' : p.unit;
+                pf.unitPrice.value = isNew ? '' : p.unitPrice;
+                pf.costPrice.value = isNew || !p.costPrice ? '' : p.costPrice;
+                pf.stockQuantity.value = isNew ? 0 : p.stockQuantity;
+                pf.minStockThreshold.value = isNew ? 5 : p.minStockThreshold;
+                pf.description.value = isNew ? '' : p.description;
+                margin();
+                openModal('productModal');
+            }
+            function margin() {
+                const price = parseFloat(pf.unitPrice.value) || 0, cost = parseFloat(pf.costPrice.value) || 0;
+                const m = document.getElementById('p_margin');
+                m.textContent = price > 0 && cost > 0 ? 'Profit ' + cur + ' ' + (price - cost).toFixed(2) + ' per unit · ' + Math.round((price - cost) / price * 100) + '% margin' : '';
+                m.style.color = price > 0 && cost > price ? 'var(--danger)' : '';
+            }
+            pf.unitPrice.addEventListener('input', margin);
+            pf.costPrice.addEventListener('input', margin);
+            document.querySelectorAll('[data-product-new]').forEach(b => b.addEventListener('click', () => fillProduct(null)));
+            document.querySelectorAll('[data-product-edit]').forEach(b => b.addEventListener('click', () => fillProduct(JSON.parse(b.dataset.productEdit))));
+            if (new URLSearchParams(location.search).get('add')) fillProduct(null);
+
+            const sm = document.getElementById('stockModal'), sf = sm.querySelector('form');
+            let current = null;
+            function preview() {
+                const q = parseFloat(sf.add_quantity.value) || 0, dir = sf.querySelector('[name=direction]:checked').value;
+                const next = Math.max(0, current.stockQuantity + (dir === 'add' ? q : -q));
+                document.querySelector('#stockPreview span:last-child').textContent = (Math.round(next * 100) / 100) + ' ' + current.unit;
+                const btn = document.getElementById('stockSubmit');
+                btn.textContent = q > 0 ? (dir === 'add' ? 'Add ' : 'Remove ') + q + ' ' + current.unit : 'Update stock';
+                btn.className = 'btn btn-lg w-full ' + (dir === 'add' ? 'btn-primary' : 'btn-danger');
+            }
+            document.querySelectorAll('[data-stock-adjust]').forEach(b => b.addEventListener('click', () => {
+                current = JSON.parse(b.dataset.stockAdjust);
+                sf.id.value = current.id;
+                sf.add_quantity.value = ''; sf.notes.value = '';
+                sf.querySelector('[value=add]').checked = true;
+                document.getElementById('stockTitle').textContent = current.name;
+                document.getElementById('stockSub').textContent = (Math.round(current.stockQuantity * 100) / 100) + ' ' + current.unit + ' on hand';
+                preview();
+                openModal('stockModal');
+            }));
+            sf.addEventListener('input', preview);
+        })();
+        </script>
+
+<?php
+// =====================================================================
+// CUSTOMERS
+// =====================================================================
+elseif ($tab === 'customers'):
+    $owingOnly = ($_GET['filter'] ?? '') === 'owing';
+?>
+        <?php pageHeader('Customers', count($allCustomers) . ' saved · ' . $debtorsCount . ' owing ' . money($totalDebtSum),
+            '<button type="button" class="btn btn-primary" data-customer-new>' . icon('plus', 'ic-sm') . ' Add customer</button>'); ?>
+
+        <div class="flex flex-col md:flex-row gap-3 mb-4" data-filters="customersTable">
+            <div class="search input-icon flex-1">
+                <?= icon('search', 'ic-sm') ?>
+                <input type="search" class="input" data-filter-search placeholder="Search name, phone or address   ( / )" aria-label="Search customers">
+            </div>
+            <div class="seg" role="group" aria-label="Show" data-filter-key="owing">
+                <button type="button" aria-pressed="<?= $owingOnly ? 'false' : 'true' ?>" data-value="">All <span class="subtle tnum"><?= count($allCustomers) ?></span></button>
+                <button type="button" aria-pressed="<?= $owingOnly ? 'true' : 'false' ?>" data-value="yes">Owing <span class="subtle tnum"><?= $debtorsCount ?></span></button>
+            </div>
+        </div>
+
+        <div class="card overflow-hidden">
+            <div class="overflow-x-auto">
+                <table class="table" id="customersTable">
+                    <thead><tr><th>Customer</th><th class="opt">Contact</th><th class="num opt">Bought</th><th class="num opt">Paid</th><th class="num">Balance</th><th class="text-right"><span class="sr-only">Actions</span></th></tr></thead>
+                    <tbody>
+                    <?php if (empty($allCustomers)): ?>
+                        <?= emptyRow(6, 'users', 'No customers yet', 'Customers you add or sell to on credit show up here.') ?>
+                    <?php else:
+                        // Owing customers first (largest balance), then everyone else alphabetically.
+                        usort($allCustomers, function ($a, $b) {
+                            $ba = (float)($a['currentBalance'] ?: $a['totalDebt']); $bb = (float)($b['currentBalance'] ?: $b['totalDebt']);
+                            if (($ba > 0.009) !== ($bb > 0.009)) return $ba > 0.009 ? -1 : 1;
+                            return $ba > 0.009 ? $bb <=> $ba : strcasecmp($a['name'], $b['name']);
+                        });
+                        foreach ($allCustomers as $c):
+                        $bal = (float)($c['currentBalance'] ?: $c['totalDebt'] ?: 0.0);
+                        $owes = $bal > 0.009;
+                        $wa = preg_replace('/\D/', '', (string)($c['whatsapp'] ?: $c['phone']));
+                        if (strpos($wa, '0') === 0) $wa = '233' . substr($wa, 1); // local Ghana numbers
+                        $reminder = "Hello {$c['name']}, a friendly reminder from {$settings['businessName']}: your balance is {$currency} " . number_format($bal, 2) . '.'
+                            . ($settings['momoPaymentDetails'] ? " You can pay via {$settings['momoPaymentDetails']}." : '') . ' Thank you!';
+                        $cData = ['id' => (int)$c['id'], 'name' => $c['name'], 'phone' => $c['phone'], 'whatsapp' => $c['whatsapp'], 'address' => $c['address'], 'notes' => (string)($c['notes'] ?? '')];
+                    ?>
+                        <tr data-search="<?= e(strtolower($c['name'] . ' ' . $c['phone'] . ' ' . $c['whatsapp'] . ' ' . $c['address'])) ?>" data-owing="<?= $owes ? 'yes' : 'no' ?>">
+                            <td>
+                                <div class="flex items-center gap-3">
+                                    <span class="avatar bg-tone-<?= avatarTone($c['name']) ?>"><?= e(initials($c['name'])) ?></span>
+                                    <div class="min-w-0">
+                                        <div class="font-semibold truncate max-w-[220px]"><?= e($c['name']) ?></div>
+                                        <div class="text-xs muted truncate max-w-[220px]"><?= e($c['address'] ?: ($c['notes'] ?? '') ?: 'Customer since ' . fmtDate($c['createdAt'], 'M Y')) ?></div>
+                                    </div>
+                                </div>
+                            </td>
+                            <td class="whitespace-nowrap opt">
+                                <?php if (!empty($c['phone'])): ?>
+                                    <a href="tel:<?= e($c['phone']) ?>" class="inline-flex items-center gap-1.5 hover:underline"><?= icon('phone', 'ic-sm subtle') ?><?= e($c['phone']) ?></a>
+                                <?php else: ?><span class="subtle">No phone</span><?php endif; ?>
+                            </td>
+                            <td class="num opt"><?= money($c['totalPurchases']) ?></td>
+                            <td class="num muted opt"><?= money($c['totalPaid']) ?></td>
+                            <td class="num">
+                                <?php if ($owes): ?><span class="font-bold text-danger"><?= money($bal) ?></span>
+                                <?php else: ?><span class="badge tone-success">Settled</span><?php endif; ?>
+                            </td>
+                            <td class="actions">
+                                <div class="flex justify-end gap-1.5">
+                                    <?php if ($owes): ?>
+                                        <button type="button" class="btn btn-success btn-sm" data-pay='<?= jsonAttr(['id' => (int)$c['id'], 'name' => $c['name'], 'balance' => $bal, 'return' => 'customers']) ?>'><?= icon('wallet', 'ic-sm') ?> Collect</button>
+                                        <?php if ($wa !== ''): ?>
+                                            <a class="icon-btn tone-success" href="https://wa.me/<?= e($wa) ?>?text=<?= rawurlencode($reminder) ?>" target="_blank" rel="noopener" aria-label="Send WhatsApp reminder to <?= e($c['name']) ?>" title="WhatsApp reminder"><?= icon('chat', 'ic-sm') ?></a>
+                                        <?php endif; ?>
+                                    <?php elseif ($wa !== ''): ?>
+                                        <a class="icon-btn" href="https://wa.me/<?= e($wa) ?>" target="_blank" rel="noopener" aria-label="WhatsApp <?= e($c['name']) ?>" title="WhatsApp"><?= icon('chat', 'ic-sm') ?></a>
+                                    <?php endif; ?>
+                                    <button type="button" class="icon-btn" data-customer-edit='<?= jsonAttr($cData) ?>' aria-label="Edit <?= e($c['name']) ?>" title="Edit"><?= icon('edit', 'ic-sm') ?></button>
+                                    <form method="POST" action="index.php" data-confirm="Delete <?= e($c['name']) ?>?<?= $owes ? ' They still owe ' . money($bal) . ', and that balance will be lost.' : '' ?> Their past invoices are kept." data-confirm-action="Delete customer">
+                                        <?= csrfField() ?>
+                                        <input type="hidden" name="action" value="delete_customer">
+                                        <input type="hidden" name="id" value="<?= (int)$c['id'] ?>">
+                                        <button type="submit" class="icon-btn tone-danger" aria-label="Delete <?= e($c['name']) ?>" title="Delete"><?= icon('trash', 'ic-sm') ?></button>
+                                    </form>
+                                </div>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                        <?= noMatchRow(6) ?>
+                    <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Customer form -->
+        <div class="modal" id="customerModal" role="dialog" aria-modal="true" aria-labelledby="customerTitle">
+            <div class="modal-panel">
+                <form method="POST" action="index.php" class="p-6 sm:p-8 space-y-4">
+                    <?= csrfField() ?>
+                    <input type="hidden" name="action" value="create_customer">
+                    <input type="hidden" name="id" value="">
+                    <div class="flex items-center justify-between">
+                        <h2 id="customerTitle" class="text-xl font-bold">Add customer</h2>
+                        <button type="button" class="icon-btn" data-close aria-label="Close"><?= icon('x', 'ic-sm') ?></button>
+                    </div>
+                    <div>
+                        <label class="label" for="c_name">Name</label>
+                        <input class="input" id="c_name" name="name" required placeholder="Full name or business name">
+                    </div>
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label class="label" for="c_phone">Phone</label>
+                            <input class="input" id="c_phone" name="phone" inputmode="tel" placeholder="024 123 4567">
+                        </div>
+                        <div>
+                            <label class="label" for="c_wa">WhatsApp <span class="subtle font-normal">if different</span></label>
+                            <input class="input" id="c_wa" name="whatsapp" inputmode="tel">
+                        </div>
+                    </div>
+                    <div>
+                        <label class="label" for="c_addr">Address</label>
+                        <input class="input" id="c_addr" name="address" placeholder="Optional">
+                    </div>
+                    <div id="c_debt_wrap">
+                        <label class="label" for="c_debt">Opening balance owed (<?= e($currency) ?>)</label>
+                        <input class="input tnum" id="c_debt" name="initial_debt" type="number" step="0.01" min="0" placeholder="0.00" inputmode="decimal">
+                        <p class="hint">Only if they already owe you from before.</p>
+                    </div>
+                    <div>
+                        <label class="label" for="c_notes">Notes</label>
+                        <input class="input" id="c_notes" name="notes" placeholder="Optional">
+                    </div>
+                    <div class="flex gap-3 pt-2">
+                        <button type="button" class="btn btn-secondary flex-1" data-close>Cancel</button>
+                        <button type="submit" class="btn btn-primary flex-[2]" id="customerSubmit">Add customer</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <script>
+        (function () {
+            const f = document.querySelector('#customerModal form');
+            function fill(c) {
+                const isNew = !c;
+                f.action.value = isNew ? 'create_customer' : 'update_customer';
+                f.id.value = isNew ? '' : c.id;
+                document.getElementById('customerTitle').textContent = isNew ? 'Add customer' : 'Edit customer';
+                document.getElementById('customerSubmit').textContent = isNew ? 'Add customer' : 'Save changes';
+                document.getElementById('c_debt_wrap').classList.toggle('hidden', !isNew);
+                ['name', 'phone', 'whatsapp', 'address', 'notes'].forEach(k => f[k].value = isNew ? '' : (c[k] || ''));
+                f.initial_debt.value = '';
+                openModal('customerModal');
+            }
+            document.querySelectorAll('[data-customer-new]').forEach(b => b.addEventListener('click', () => fill(null)));
+            document.querySelectorAll('[data-customer-edit]').forEach(b => b.addEventListener('click', () => fill(JSON.parse(b.dataset.customerEdit))));
+        })();
+        </script>
+
+<?php
+// =====================================================================
+// PAYMENTS
+// =====================================================================
+elseif ($tab === 'payments'):
+    $allPayments = $db->query("SELECT * FROM payments ORDER BY timestamp DESC")->fetchAll();
+    $monthStartMs = strtotime('first day of this month 00:00') * 1000;
+    $payMonth = array_sum(array_map(fn($p) => (float)$p['timestamp'] >= $monthStartMs ? (float)$p['amount'] : 0, $allPayments));
+    $payTotal = array_sum(array_map(fn($p) => (float)$p['amount'], $allPayments));
+?>
+        <?php pageHeader('Payments', 'Money received from customers, including part-payments on credit sales.'); ?>
+
+        <div class="grid grid-cols-2 gap-3 lg:gap-5 mb-6">
+            <div class="card card-pad"><div class="muted text-sm font-medium">This month</div><div class="kpi"><?= money($payMonth) ?></div></div>
+            <div class="card card-pad"><div class="muted text-sm font-medium">All time · <?= count($allPayments) ?> payments</div><div class="kpi"><?= money($payTotal) ?></div></div>
+        </div>
+
+        <div class="flex flex-col md:flex-row gap-3 mb-4" data-filters="paymentsTable">
+            <div class="search input-icon flex-1">
+                <?= icon('search', 'ic-sm') ?>
+                <input type="search" class="input" data-filter-search placeholder="Search customer or note   ( / )" aria-label="Search payments">
+            </div>
+            <select class="input md:w-52" data-filter-key="method" aria-label="Payment method">
+                <option value="">All methods</option>
+                <?php foreach ($PAYMENT_METHODS as $k => $l): ?><option value="<?= e($l) ?>"><?= e($l) ?></option><?php endforeach; ?>
+            </select>
+        </div>
+
+        <div class="card overflow-hidden">
+            <div class="overflow-x-auto">
+                <table class="table" id="paymentsTable">
+                    <thead><tr><th>Customer</th><th class="opt">Date</th><th class="opt">Method</th><th class="num">Amount</th><th class="num opt">Balance after</th><th class="opt">Note</th></tr></thead>
+                    <tbody>
+                    <?php if (empty($allPayments)): ?>
+                        <?= emptyRow(6, 'wallet', 'No payments yet', 'Payments you collect from customers show up here.') ?>
+                    <?php else: foreach ($allPayments as $p): $ml = methodLabel((string)$p['paymentMethod']); ?>
+                        <tr data-search="<?= e(strtolower($p['customerName'] . ' ' . ($p['notes'] ?? ''))) ?>" data-method="<?= e($ml) ?>">
+                            <td>
+                                <div class="flex items-center gap-3">
+                                    <span class="avatar bg-tone-<?= avatarTone((string)$p['customerName']) ?>" style="width:34px;height:34px;font-size:12px"><?= e(initials((string)$p['customerName'])) ?></span>
+                                    <span class="font-medium"><?= e($p['customerName']) ?></span>
+                                </div>
+                            </td>
+                            <td class="muted whitespace-nowrap opt"><?= fmtDate($p['timestamp'], 'j M Y, H:i') ?></td>
+                            <td class="opt"><span class="badge tone-neutral"><?= e($ml) ?></span></td>
+                            <td class="num font-semibold text-success">+ <?= money($p['amount']) ?></td>
+                            <td class="num opt <?= (float)$p['balanceAfterPayment'] > 0.009 ? '' : 'subtle' ?>"><?= (float)$p['balanceAfterPayment'] > 0.009 ? money($p['balanceAfterPayment']) : 'Settled' ?></td>
+                            <td class="muted text-sm max-w-[260px] truncate opt"><?= e($p['notes'] ?: '—') ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                        <?= noMatchRow(6) ?>
+                    <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+<?php
+// =====================================================================
+// STOCK HISTORY
+// =====================================================================
+elseif ($tab === 'inventory_logs'):
+    $allLogs = $db->query("SELECT * FROM inventory_logs ORDER BY timestamp DESC LIMIT 300")->fetchAll();
+    $typeLabels = ['RESTOCK' => 'Restock', 'SALE' => 'Sale', 'CORRECTION' => 'Correction', 'ADJUSTMENT' => 'Adjustment', 'DAMAGE' => 'Damaged',
+                   'EGG_COLLECTION' => 'Production', 'MORTALITY' => 'Loss', 'VOID' => 'Sale voided'];
+    $typeTones = ['RESTOCK' => 'success', 'SALE' => 'info', 'CORRECTION' => 'warning', 'DAMAGE' => 'danger', 'MORTALITY' => 'danger', 'EGG_COLLECTION' => 'success'];
+?>
+        <?php pageHeader('Stock history', 'Every change to stock: restocks, sales and corrections (latest 300).'); ?>
+
+        <div class="flex flex-col md:flex-row gap-3 mb-4" data-filters="logsTable">
+            <div class="search input-icon flex-1">
+                <?= icon('search', 'ic-sm') ?>
+                <input type="search" class="input" data-filter-search placeholder="Search product or reason   ( / )" aria-label="Search stock history">
+            </div>
+            <div class="seg" role="group" aria-label="Movement" data-filter-key="dir">
+                <button type="button" aria-pressed="true" data-value="">All</button>
+                <button type="button" aria-pressed="false" data-value="in">Stock in</button>
+                <button type="button" aria-pressed="false" data-value="out">Stock out</button>
+            </div>
+        </div>
+
+        <div class="card overflow-hidden">
+            <div class="overflow-x-auto">
+                <table class="table" id="logsTable">
+                    <thead><tr><th>Product</th><th>Type</th><th class="opt">Date</th><th class="num">Change</th><th class="num opt">Stock after</th><th class="opt">Reason</th></tr></thead>
+                    <tbody>
+                    <?php if (empty($allLogs)): ?>
+                        <?= emptyRow(6, 'history', 'No stock changes yet', 'Restocks, sales and corrections are logged here automatically.') ?>
+                    <?php else: foreach ($allLogs as $l):
+                        $chg = (float)$l['quantityChanged']; $in = $chg > 0;
+                        $type = strtoupper((string)$l['changeType']);
+                    ?>
+                        <tr data-search="<?= e(strtolower($l['productName'] . ' ' . ($l['notes'] ?? '') . ' ' . ($typeLabels[$type] ?? $type))) ?>" data-dir="<?= $in ? 'in' : 'out' ?>">
+                            <td class="font-medium"><?= e($l['productName']) ?></td>
+                            <td><span class="badge tone-<?= $typeTones[$type] ?? 'neutral' ?>"><?= e($typeLabels[$type] ?? ucfirst(strtolower($type))) ?></span></td>
+                            <td class="muted whitespace-nowrap opt"><?= fmtDate($l['timestamp'], 'j M Y, H:i') ?></td>
+                            <td class="num font-semibold <?= $in ? 'text-success' : 'text-danger' ?>"><?= $in ? '+' : '−' ?><?= fmtQty(abs($chg)) ?> <span class="muted font-normal"><?= e($l['unit']) ?></span></td>
+                            <td class="num opt"><?= fmtQty($l['quantityAfter']) ?></td>
+                            <td class="muted text-sm max-w-[280px] truncate opt"><?= e($l['notes'] ?: '—') ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                        <?= noMatchRow(6) ?>
+                    <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+<?php
+// =====================================================================
+// SETTINGS
+// =====================================================================
+elseif ($tab === 'settings'): ?>
+        <?php pageHeader('Settings', 'Your business details appear on receipts, reminders and in the app.'); ?>
+
+        <div class="grid grid-cols-1 lg:grid-cols-5 gap-6 items-start">
+            <form method="POST" action="index.php" class="card card-pad lg:col-span-3 space-y-5" id="settingsForm">
+                <?= csrfField() ?>
+                <input type="hidden" name="action" value="update_settings">
+                <h2 class="section-title">Business profile</h2>
+                <div>
+                    <label class="label" for="s_name">Business name</label>
+                    <input class="input" id="s_name" name="businessName" value="<?= e($settings['businessName']) ?>" required data-preview="name">
+                </div>
+                <div>
+                    <label class="label" for="s_tag">Tagline</label>
+                    <input class="input" id="s_tag" name="businessTagline" value="<?= e($settings['businessTagline']) ?>" placeholder="e.g. Quality you can trust" data-preview="tagline">
+                </div>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                        <label class="label" for="s_phone">Phone</label>
+                        <input class="input" id="s_phone" name="businessPhone" value="<?= e($settings['businessPhone']) ?>" inputmode="tel" data-preview="phone">
+                    </div>
+                    <div>
+                        <label class="label" for="s_cur">Currency symbol</label>
+                        <input class="input" id="s_cur" name="currencySymbol" value="<?= e($currency) ?>" list="curList" data-preview="currency">
+                        <datalist id="curList"><option value="GH₵"><option value="₦"><option value="KSh"><option value="$"><option value="€"><option value="£"><option value="R"><option value="CFA"></datalist>
+                    </div>
+                </div>
+                <div>
+                    <label class="label" for="s_loc">Location</label>
+                    <input class="input" id="s_loc" name="businessLocation" value="<?= e($settings['businessLocation']) ?>" placeholder="Town, street or landmark" data-preview="location">
+                </div>
+                <div>
+                    <label class="label" for="s_pay">Payment instructions</label>
+                    <input class="input" id="s_pay" name="momoPaymentDetails" value="<?= e($settings['momoPaymentDetails']) ?>" placeholder="e.g. MoMo 024 123 4567 (Ama's Shop) · Bank: …" data-preview="pay">
+                    <p class="hint">Added to payment reminders so customers know how to pay you.</p>
+                </div>
+                <div class="flex items-center gap-3 pt-2">
+                    <button type="submit" class="btn btn-primary" id="settingsSave" disabled><?= icon('check', 'ic-sm') ?> Save changes</button>
+                    <span class="text-sm muted" id="settingsState">No unsaved changes</span>
+                </div>
+            </form>
+
+            <div class="lg:col-span-2 space-y-5">
+                <section class="card card-pad">
+                    <div class="caption mb-4">Receipt preview</div>
+                    <div class="soft p-5 text-center">
+                        <div class="avatar bg-tone-primary mx-auto mb-3" style="width:48px;height:48px" id="pv_init"><?= e(initials($settings['businessName'])) ?></div>
+                        <div class="font-bold text-lg" id="pv_name"><?= e($settings['businessName']) ?></div>
+                        <div class="text-sm muted" id="pv_tagline"><?= e($settings['businessTagline']) ?></div>
+                        <div class="text-xs subtle mt-1"><span id="pv_location"><?= e($settings['businessLocation']) ?></span> <span id="pv_phone"><?= e($settings['businessPhone']) ?></span></div>
+                        <div class="divider my-4"></div>
+                        <div class="flex justify-between text-sm tnum"><span class="muted">2 × Sample item</span><span><span class="pv_cur"><?= e($currency) ?></span> 50.00</span></div>
+                        <div class="flex justify-between font-bold mt-2 tnum"><span>Total</span><span><span class="pv_cur"><?= e($currency) ?></span> 50.00</span></div>
+                        <div class="text-xs muted mt-4" id="pv_pay"><?= e($settings['momoPaymentDetails']) ?></div>
+                    </div>
+                </section>
+                <section class="card card-pad space-y-3">
+                    <h2 class="section-title">Connection</h2>
+                    <div class="flex items-center gap-3"><span class="tile bg-tone-success"><?= icon('database', 'ic-sm') ?></span><div><div class="font-medium">MySQL connected</div><div class="text-sm muted"><?= e($DB_NAME) ?> on <?= e($DB_HOST) ?></div></div></div>
+                    <p class="text-sm muted">The app syncs through <code class="text-xs px-1.5 py-0.5 rounded" style="background:var(--surface-2)">sync.php</code> using the same secret key you sign in with.</p>
+                </section>
+            </div>
+        </div>
+
+        <script>
+        (function () {
+            const f = document.getElementById('settingsForm'), save = document.getElementById('settingsSave'), state = document.getElementById('settingsState');
+            const initial = new FormData(f);
+            const map = { name: 'pv_name', tagline: 'pv_tagline', phone: 'pv_phone', location: 'pv_location', pay: 'pv_pay' };
+            f.addEventListener('input', e => {
+                const k = e.target.dataset.preview;
+                if (k === 'currency') document.querySelectorAll('.pv_cur').forEach(n => n.textContent = e.target.value || 'GH₵');
+                else if (map[k]) document.getElementById(map[k]).textContent = e.target.value;
+                if (k === 'name') document.getElementById('pv_init').textContent = e.target.value.trim().split(/\s+/).slice(0, 2).map(w => w[0] || '').join('').toUpperCase() || '?';
+                const dirty = [...new FormData(f).entries()].some(([key, v]) => initial.get(key) !== v);
+                save.disabled = !dirty;
+                state.textContent = dirty ? 'You have unsaved changes' : 'No unsaved changes';
+                state.style.color = dirty ? 'var(--warning)' : '';
+            });
+            window.addEventListener('beforeunload', e => { if (!save.disabled && !f.dataset.submitting) { e.preventDefault(); e.returnValue = ''; } });
+            f.addEventListener('submit', () => f.dataset.submitting = '1');
+        })();
+        </script>
+<?php endif; ?>
+
+    </div>
+</main>
+
+<!-- ===================== GLOBAL: COLLECT PAYMENT ===================== -->
+<div class="modal" id="paymentModal" role="dialog" aria-modal="true" aria-labelledby="payTitle">
+    <div class="modal-panel">
+        <form method="POST" action="index.php" class="p-6 sm:p-8 space-y-5">
+            <?= csrfField() ?>
+            <input type="hidden" name="action" value="record_payment">
+            <input type="hidden" name="customer_id" value="">
+            <input type="hidden" name="return_tab" value="customers">
+            <div class="flex items-start justify-between gap-4">
+                <div class="flex items-center gap-3">
+                    <span class="avatar bg-tone-success" id="payAvatar"></span>
+                    <div>
+                        <h2 id="payTitle" class="text-xl font-bold">Collect payment</h2>
+                        <p class="text-sm muted"><span id="payName"></span> owes <span id="payOwed" class="font-semibold text-danger tnum"></span></p>
+                    </div>
+                </div>
+                <button type="button" class="icon-btn" data-close aria-label="Close"><?= icon('x', 'ic-sm') ?></button>
+            </div>
+            <div>
+                <label class="label" for="payAmount">Amount received (<?= e($currency) ?>)</label>
+                <input class="input input-lg tnum" id="payAmount" name="amount" type="number" step="0.01" min="0.01" required inputmode="decimal">
+                <div class="flex gap-2 mt-3">
+                    <button type="button" class="chip" data-pay-preset="1">Full amount</button>
+                    <button type="button" class="chip" data-pay-preset="0.5">Half</button>
+                </div>
+            </div>
+            <div>
+                <span class="label">Method</span>
+                <div class="seg w-full" role="radiogroup" aria-label="Payment method">
+                    <?php $first = true; foreach ($PAYMENT_METHODS as $val => $label): ?>
+                        <label><input type="radio" name="payment_method" value="<?= $val ?>" <?= $first ? 'checked' : '' ?>><?= e($label) ?></label>
+                    <?php $first = false; endforeach; ?>
+                </div>
+            </div>
+            <div>
+                <label class="label" for="payNotes">Note <span class="subtle font-normal">optional</span></label>
+                <input class="input" id="payNotes" name="notes" placeholder="e.g. MoMo reference 12345">
+            </div>
+            <div class="soft p-3 text-sm flex justify-between"><span class="muted">Balance after payment</span><span id="payAfter" class="font-semibold tnum"></span></div>
+            <button type="submit" class="btn btn-success btn-lg w-full" id="paySubmit">Record payment</button>
+        </form>
+    </div>
+</div>
+
+<!-- ===================== GLOBAL: CONFIRM ===================== -->
+<div class="modal" id="confirmModal" role="alertdialog" aria-modal="true" aria-labelledby="confirmTitle" aria-describedby="confirmText">
+    <div class="modal-panel" style="max-width:420px">
+        <div class="p-6 sm:p-8 text-center">
+            <div class="tile bg-tone-danger mx-auto mb-4" style="width:56px;height:56px;border-radius:999px"><?= icon('alert', 'ic-lg') ?></div>
+            <h2 id="confirmTitle" class="text-xl font-bold">Are you sure?</h2>
+            <p id="confirmText" class="muted mt-2"></p>
+            <div class="flex flex-col gap-2 mt-6">
+                <button type="button" class="btn btn-danger btn-lg w-full" id="confirmYes">Delete</button>
+                <button type="button" class="btn btn-secondary btn-lg w-full" data-close>Cancel</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ===================== TOAST ===================== -->
+<div class="toast" aria-live="polite" id="toastHost">
+    <?php if ($msg !== '' || $error !== ''): $isErr = $error !== ''; ?>
+        <div class="card p-4 flex items-start gap-3" role="<?= $isErr ? 'alert' : 'status' ?>" data-toast>
+            <span class="tile bg-tone-<?= $isErr ? 'danger' : 'success' ?>" style="width:32px;height:32px;border-radius:999px"><?= icon($isErr ? 'alert' : 'check', 'ic-sm') ?></span>
+            <p class="text-sm font-medium flex-1 pt-1.5"><?= e($isErr ? $error : $msg) ?></p>
+            <button type="button" class="icon-btn" style="width:28px;height:28px" onclick="this.closest('[data-toast]').remove()" aria-label="Dismiss"><?= icon('x', 'ic-sm') ?></button>
+        </div>
+    <?php endif; ?>
+</div>
+
+<style>
+  [data-theme="light"] .theme-dark-only, [data-theme="dark"] .theme-light-only { display: none; }
+  @media (max-width: 1023px) { #sidebar.open { transform: translateX(0); } }
+</style>
+<script>
+    const ICON_CHECK = <?= json_encode(icon('check', 'ic-sm')) ?>, ICON_ALERT = <?= json_encode(icon('alert', 'ic-sm')) ?>;
+    const CURRENCY = <?= json_encode($currency) ?>;
+
+    function toggleTheme() {
+        const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+        document.documentElement.setAttribute('data-theme', next);
+        try { localStorage.setItem('bt-theme', next); } catch (e) {}
+    }
+    function toggleNav(open) {
+        document.getElementById('sidebar').classList.toggle('open', open);
+        document.getElementById('navScrim').classList.toggle('hidden', !open);
+    }
+
+    // ---- Modals: focus management, Esc and backdrop close ----
+    let lastFocus = null;
+    function openModal(id) {
+        lastFocus = document.activeElement;
+        const m = document.getElementById(id);
+        m.classList.add('open');
+        document.body.style.overflow = 'hidden';
+        setTimeout(() => { const f = m.querySelector('input:not([type=hidden]):not([readonly]), select, textarea, button:not([data-close])'); if (f) f.focus(); }, 60);
+    }
+    function closeModal(m) {
+        m.classList.remove('open');
+        if (!document.querySelector('.modal.open')) document.body.style.overflow = '';
+        if (lastFocus) lastFocus.focus();
+    }
+    document.querySelectorAll('.modal').forEach(m => {
+        m.addEventListener('click', e => { if (e.target === m || e.target.closest('[data-close]')) closeModal(m); });
+    });
+
+    // ---- Toasts ----
+    function showToast(text, tone = 'success') {
+        const host = document.getElementById('toastHost');
+        host.innerHTML = '';
+        const t = document.createElement('div');
+        t.className = 'card p-4 flex items-start gap-3';
+        t.setAttribute('role', tone === 'danger' ? 'alert' : 'status');
+        t.innerHTML = '<span class="tile bg-tone-' + tone + '" style="width:32px;height:32px;border-radius:999px">' + (tone === 'danger' ? ICON_ALERT : ICON_CHECK) + '</span><p class="text-sm font-medium flex-1 pt-1.5"></p>';
+        t.querySelector('p').textContent = text;
+        host.appendChild(t);
+        setTimeout(() => t.remove(), 5000);
+    }
+    document.querySelectorAll('[data-toast]').forEach(t => setTimeout(() => t.remove(), 6000));
+    // Drop flash params so a refresh doesn't repeat the message.
+    (function () {
+        const u = new URL(location.href);
+        if (u.searchParams.has('msg') || u.searchParams.has('err') || u.searchParams.has('open')) {
+            ['msg', 'err', 'open'].forEach(k => u.searchParams.delete(k));
+            history.replaceState(null, '', u.pathname + (u.search ? u.search : ''));
+        }
+    })();
+
+    // ---- Confirm before destructive submits ----
+    let pendingForm = null;
+    document.querySelectorAll('form[data-confirm]').forEach(f => f.addEventListener('submit', e => {
+        if (f.dataset.confirmed) return;
+        e.preventDefault();
+        pendingForm = f;
+        document.getElementById('confirmText').textContent = f.dataset.confirm;
+        document.getElementById('confirmYes').textContent = f.dataset.confirmAction || 'Delete';
+        openModal('confirmModal');
+        setTimeout(() => document.querySelector('#confirmModal [data-close]').focus(), 80); // safe default
+    }));
+    document.getElementById('confirmYes').addEventListener('click', () => {
+        if (!pendingForm) return;
+        pendingForm.dataset.confirmed = '1';
+        pendingForm.submit();
+    });
+
+    // ---- Collect payment ----
+    (function () {
+        const m = document.getElementById('paymentModal'), f = m.querySelector('form');
+        let owed = 0;
+        const money = n => CURRENCY + ' ' + Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        function update() {
+            const a = parseFloat(f.amount.value) || 0;
+            const after = Math.max(0, owed - a);
+            document.getElementById('payAfter').textContent = after <= 0.009 ? 'Settled' : money(after);
+            document.getElementById('payAfter').style.color = after <= 0.009 ? 'var(--success)' : '';
+            const btn = document.getElementById('paySubmit');
+            btn.disabled = a <= 0 || a > owed + 0.001;
+            btn.textContent = a > owed + 0.001 ? 'More than they owe' : (a > 0 ? 'Record ' + money(a) : 'Record payment');
+            m.querySelectorAll('[data-pay-preset]').forEach(c => c.setAttribute('aria-pressed', Math.abs(a - owed * parseFloat(c.dataset.payPreset)) < .005 ? 'true' : 'false'));
+        }
+        document.querySelectorAll('[data-pay]').forEach(b => b.addEventListener('click', () => {
+            const d = JSON.parse(b.dataset.pay);
+            owed = Number(d.balance);
+            f.customer_id.value = d.id;
+            f.return_tab.value = d.return || 'customers';
+            f.amount.value = owed.toFixed(2);
+            f.amount.max = owed.toFixed(2);
+            f.notes.value = '';
+            document.getElementById('payName').textContent = d.name;
+            document.getElementById('payOwed').textContent = money(owed);
+            document.getElementById('payAvatar').textContent = d.name.trim().split(/\s+/).slice(0, 2).map(w => w[0]).join('').toUpperCase();
+            update();
+            openModal('paymentModal');
+        }));
+        m.querySelectorAll('[data-pay-preset]').forEach(c => c.addEventListener('click', () => { f.amount.value = (owed * parseFloat(c.dataset.payPreset)).toFixed(2); update(); }));
+        f.amount.addEventListener('input', update);
+        f.addEventListener('submit', () => { const b = document.getElementById('paySubmit'); setTimeout(() => { b.disabled = true; b.textContent = 'Saving…'; }); });
+    })();
+
+    // ---- Client-side table filters (search + segmented/select filters) ----
+    document.querySelectorAll('[data-filters]').forEach(bar => {
+        const table = document.getElementById(bar.dataset.filters);
+        if (!table) return;
+        const rows = [...table.querySelectorAll('tbody tr:not(.no-match):not(.empty-row)')];
+        const noMatch = table.querySelector('tr.no-match');
+        const search = bar.querySelector('[data-filter-search]');
+        const state = {};
+        bar.querySelectorAll('[data-filter-key]').forEach(ctrl => {
+            const key = ctrl.dataset.filterKey;
+            if (ctrl.tagName === 'SELECT') {
+                state[key] = ctrl.value;
+                ctrl.addEventListener('change', () => { state[key] = ctrl.value; apply(); });
+            } else {
+                const on = ctrl.querySelector('[aria-pressed="true"]');
+                state[key] = on ? on.dataset.value : '';
+                ctrl.querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
+                    ctrl.querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', x === b ? 'true' : 'false'));
+                    state[key] = b.dataset.value; apply();
+                }));
+            }
+        });
+        const dayMs = 86400000, todayStart = <?= (int)$todayStartMs ?>;
+        function apply() {
+            const q = (search ? search.value : '').trim().toLowerCase();
+            let shown = 0, sum = 0;
+            rows.forEach(r => {
+                let ok = !q || (r.dataset.search || '').includes(q);
+                for (const [k, v] of Object.entries(state)) {
+                    if (!v || !ok) continue;
+                    if (k === 'period') {
+                        const ts = Number(r.dataset.ts);
+                        ok = v === 'today' ? ts >= todayStart : ts >= Date.now() - Number(v) * dayMs;
+                    } else ok = r.dataset[k] === v;
+                }
+                r.classList.toggle('hidden', !ok);
+                if (ok) { shown++; if (r.dataset.order) sum += JSON.parse(r.dataset.order).total; }
+            });
+            if (noMatch) noMatch.classList.toggle('hidden', shown > 0 || rows.length === 0);
+            const summary = document.querySelector('[data-summary="' + table.id + '"]');
+            if (summary) {
+                summary.children[0].textContent = 'Showing ' + shown + ' of ' + rows.length;
+                summary.children[1].textContent = CURRENCY + ' ' + sum.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            }
+        }
+        if (search) search.addEventListener('input', apply);
+        apply();
+    });
+
+    // ---- Keyboard shortcuts: "/" search, "n" new sale, Esc close ----
+    document.addEventListener('keydown', e => {
+        const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName) || document.activeElement.isContentEditable;
+        if (e.key === 'Escape') { const m = document.querySelector('.modal.open'); if (m) closeModal(m); else toggleNav(false); return; }
+        if (typing || e.ctrlKey || e.metaKey || e.altKey) return;
+        if (e.key === '/') { const s = document.querySelector('[data-filter-search], #posSearch'); if (s) { e.preventDefault(); s.focus(); } }
+        if (e.key === 'n' || e.key === 'N') { if (!location.search.includes('tab=new_sale')) location.href = 'index.php?tab=new_sale'; }
+    });
+</script>
 </body>
 </html>
