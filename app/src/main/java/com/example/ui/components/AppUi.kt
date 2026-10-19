@@ -91,33 +91,18 @@ fun Modifier.pressable(enabled: Boolean = true, onClick: () -> Unit): Modifier {
 fun AppCard(
     modifier: Modifier = Modifier,
     onClick: (() -> Unit)? = null,
-    shape: Shape = RoundedCornerShape(20.dp),
+    shape: Shape = RoundedCornerShape(24.dp),
     color: Color = MaterialTheme.colorScheme.surface,
     borderColor: Color? = null,
     contentPadding: PaddingValues = PaddingValues(16.dp),
     content: @Composable ColumnScope.() -> Unit
 ) {
-    val dark = AppTheme.status.isDark
     val source = remember { MutableInteractionSource() }
     val base = modifier
-        .then(if (onClick != null) Modifier.pressScale(source, 0.98f) else Modifier)
-        .then(
-            if (!dark) Modifier.shadow(
-                elevation = 6.dp,
-                shape = shape,
-                ambientColor = Color(0x14000000),
-                spotColor = Color(0x1F000000)
-            ) else Modifier
-        )
+        .then(if (onClick != null) Modifier.pressScale(source, 0.97f) else Modifier)
+        .clay(shape, color)
+        .then(if (borderColor != null && borderColor != Color.Transparent) Modifier.border(1.dp, borderColor, shape) else Modifier)
         .clip(shape)
-        .background(color)
-        .then(
-            when {
-                borderColor != null -> Modifier.border(1.dp, borderColor, shape)
-                dark -> Modifier.border(1.dp, AppTheme.status.cardBorder, shape)
-                else -> Modifier
-            }
-        )
         .then(
             if (onClick != null) Modifier.clickable(
                 interactionSource = source,
