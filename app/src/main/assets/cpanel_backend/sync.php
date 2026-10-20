@@ -57,6 +57,93 @@ try {
     exit;
 }
 
+// Keep older databases compatible with photo sync (adds missing columns once).
+foreach (['imageUrl' => "VARCHAR(512) NOT NULL DEFAULT ''", 'unitPrice' => "DECIMAL(12,2) NOT NULL DEFAULT 0.00", 'description' => "TEXT NULL"] as $col => $def) {
+    try {
+        if ($pdo->query("SHOW COLUMNS FROM products LIKE '$col'")->rowCount() === 0) {
+            $pdo->exec("ALTER TABLE products ADD COLUMN `$col` $def");
+        }
+    } catch (Exception $e) { /* table may not exist yet */ }
+}
+
+// ----------------------------------------------------
+// PRODUCT PHOTOS (shared by sync.php and index.php; keep both copies in sync)
+// Photos live in ./uploads/products/ next to this file, named by content hash.
+// ----------------------------------------------------
+if (!function_exists('bt_store_product_image')) {
+    function bt_uploads_dir(): string {
+        $dir = __DIR__ . '/uploads/products';
+        if (!is_dir($dir)) @mkdir($dir, 0755, true);
+        // Never serve listings or run scripts from the uploads folder. (php_flag is avoided on
+        // purpose: it breaks the folder with a 500 error on PHP-FPM hosts.)
+        $ht = __DIR__ . '/uploads/.htaccess';
+        if (!file_exists($ht)) {
+            @file_put_contents($ht, "Options -Indexes\nRemoveHandler .php .phtml .php3 .php4 .php5 .php7 .php8 .phar\n"
+                . "<FilesMatch \"\\.(php[0-9]?|phtml|phar|pl|py|cgi|sh)$\">\n"
+                . "  <IfModule mod_authz_core.c>\n    Require all denied\n  </IfModule>\n"
+                . "  <IfModule !mod_authz_core.c>\n    Deny from all\n  </IfModule>\n</FilesMatch>\n");
+        }
+        if (!file_exists(__DIR__ . '/uploads/index.html')) @file_put_contents(__DIR__ . '/uploads/index.html', '');
+        if (!file_exists($dir . '/index.html')) @file_put_contents($dir . '/index.html', '');
+        return $dir;
+    }
+
+    /** Public URL of the uploads folder, e.g. https://example.com/biztrack/uploads/products */
+    function bt_uploads_base_url(): string {
+        $https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+            || strtolower((string)($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '')) === 'https';
+        $host = preg_replace('/[^A-Za-z0-9.\-:\[\]]/', '', (string)($_SERVER['HTTP_HOST'] ?? 'localhost'));
+        $dir = rtrim(str_replace('\\', '/', dirname((string)($_SERVER['SCRIPT_NAME'] ?? '/'))), '/');
+        return ($https ? 'https' : 'http') . '://' . $host . $dir . '/uploads/products';
+    }
+
+    /**
+     * Validates and stores an uploaded image ($_FILES entry). Returns [url, null] or [null, error].
+     * Accepts JPEG, PNG and WebP up to 6 MB. With GD available the image is resized to at most
+     * 1024px and re-encoded as JPEG, which also strips anything embedded in the file.
+     */
+    function bt_store_product_image(array $file): array {
+        if (($file['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) return [null, 'Upload failed (code ' . (int)($file['error'] ?? -1) . ').'];
+        if (!is_uploaded_file($file['tmp_name'] ?? '')) return [null, 'Invalid upload.'];
+        if ((int)$file['size'] <= 0 || (int)$file['size'] > 6 * 1024 * 1024) return [null, 'Photo must be smaller than 6 MB.'];
+        $info = @getimagesize($file['tmp_name']);
+        $types = [IMAGETYPE_JPEG => 'jpg', IMAGETYPE_PNG => 'png'];
+        if (defined('IMAGETYPE_WEBP')) $types[IMAGETYPE_WEBP] = 'webp';
+        if (!$info || !isset($types[$info[2]])) return [null, 'Only JPEG, PNG or WebP photos are allowed.'];
+
+        $bytes = null;
+        $ext = $types[$info[2]];
+        if (function_exists('imagecreatefromstring') && function_exists('imagejpeg')) {
+            $src = @imagecreatefromstring((string)file_get_contents($file['tmp_name']));
+            if ($src) {
+                $w = imagesx($src); $h = imagesy($src);
+                $scale = min(1, 1024 / max($w, $h));
+                $nw = max(1, (int)round($w * $scale)); $nh = max(1, (int)round($h * $scale));
+                $dst = imagecreatetruecolor($nw, $nh);
+                imagefill($dst, 0, 0, imagecolorallocate($dst, 255, 255, 255)); // flatten transparency onto white
+                imagecopyresampled($dst, $src, 0, 0, 0, 0, $nw, $nh, $w, $h);
+                ob_start(); imagejpeg($dst, null, 85); $bytes = ob_get_clean();
+                $src = $dst = null; // GD images are freed automatically (imagedestroy is deprecated)
+                $ext = 'jpg';
+            }
+        }
+        if ($bytes === null) $bytes = (string)file_get_contents($file['tmp_name']);
+
+        $name = sha1($bytes) . '.' . $ext;
+        $path = bt_uploads_dir() . '/' . $name;
+        if (!file_exists($path) && @file_put_contents($path, $bytes, LOCK_EX) === false) return [null, 'Could not save the photo on the server.'];
+        return [bt_uploads_base_url() . '/' . $name, null];
+    }
+
+    /** Deletes a stored photo if no product uses it any more. */
+    function bt_forget_product_image(PDO $db, string $url): void {
+        if ($url === '' || !preg_match('#/uploads/products/([a-f0-9]{40}\.(?:jpg|png|webp))$#', $url, $m)) return;
+        $q = $db->prepare("SELECT COUNT(*) FROM products WHERE imageUrl = ?");
+        $q->execute([$url]);
+        if ((int)$q->fetchColumn() === 0) @unlink(bt_uploads_dir() . '/' . $m[1]);
+    }
+}
+
 // ==========================================
 // 3. HEALTH CHECK (GET Request)
 // ==========================================
@@ -95,7 +182,34 @@ if (!hash_equals($API_SECRET_KEY, $providedKey)) {
     exit;
 }
 
-$action = $data['action'] ?? $_SERVER['HTTP_X_SYNC_ACTION'] ?? (isset($data['backupData']) ? 'PUSH' : 'PULL');
+$action = $data['action'] ?? $_POST['action'] ?? $_SERVER['HTTP_X_SYNC_ACTION'] ?? (isset($data['backupData']) ? 'PUSH' : 'PULL');
+
+// ----------------------------------------------------
+// UPLOAD_IMAGE: store a product photo sent by the app (multipart: productId + image)
+// ----------------------------------------------------
+if (strtoupper((string)$action) === 'UPLOAD_IMAGE') {
+    if (empty($_FILES['image'])) {
+        http_response_code(400);
+        echo json_encode(['status' => 'error', 'message' => 'No image received.']);
+        exit;
+    }
+    [$url, $err] = bt_store_product_image($_FILES['image']);
+    if ($err !== null) {
+        http_response_code(422);
+        echo json_encode(['status' => 'error', 'message' => $err]);
+        exit;
+    }
+    $productId = (int)($_POST['productId'] ?? 0);
+    if ($productId > 0) {
+        $old = $pdo->prepare("SELECT imageUrl FROM products WHERE id = ?");
+        $old->execute([$productId]);
+        $oldUrl = (string)($old->fetchColumn() ?: '');
+        $pdo->prepare("UPDATE products SET imageUrl = ? WHERE id = ?")->execute([$url, $productId]);
+        if ($oldUrl !== $url) bt_forget_product_image($pdo, $oldUrl);
+    }
+    echo json_encode(['status' => 'success', 'message' => 'Photo uploaded.', 'url' => $url]);
+    exit;
+}
 
 // ----------------------------------------------------
 // PULL: Return all MySQL records to Android phone
@@ -123,7 +237,9 @@ if (strtoupper($action) === 'PULL') {
                 'minStockThreshold' => (float)($p['minStockThreshold'] ?? 5.0),
                 'inStock'           => (bool)(((float)($p['stockQuantity'] ?? 0.0)) > 0),
                 'description'       => (string)($p['description'] ?? ''),
-                'imageUri'          => (string)($p['imageUri'] ?? ''),
+                // Web address of the photo. Older app versions read imageUri, newer ones remoteImageUrl.
+                'imageUri'          => (string)($p['imageUrl'] ?? ''),
+                'remoteImageUrl'    => (string)($p['imageUrl'] ?? ''),
                 'lastRestockedAt'   => (int)($p['lastRestockedAt'] ?? round(microtime(true) * 1000))
             ];
         }
@@ -283,36 +399,56 @@ if (!$backup) {
     exit;
 }
 
+$removedPhotos = [];
 try {
     $pdo->beginTransaction();
 
     // 1. Sync Products
     if (!empty($backup['products'])) {
+        // price and unitPrice are both kept (the web dashboard reads unitPrice).
+        // imageUrl: a web address replaces the server's photo, "none" means the user removed
+        // it, and blank (not uploaded yet / older app) leaves the server's photo untouched.
         $stmt = $pdo->prepare("
-            INSERT INTO products (id, name, category, price, costPrice, stockQuantity, unit, minStockThreshold, lastRestockedAt)
-            VALUES (:id, :name, :category, :price, :costPrice, :stockQuantity, :unit, :minStockThreshold, :lastRestockedAt)
+            INSERT INTO products (id, name, category, price, unitPrice, costPrice, stockQuantity, unit, minStockThreshold, description, imageUrl, lastRestockedAt)
+            VALUES (:id, :name, :category, :price, :unitPrice, :costPrice, :stockQuantity, :unit, :minStockThreshold, :description, :imageUrl, :lastRestockedAt)
             ON DUPLICATE KEY UPDATE
                 name = VALUES(name),
                 category = VALUES(category),
                 price = VALUES(price),
+                unitPrice = VALUES(unitPrice),
                 costPrice = VALUES(costPrice),
                 stockQuantity = VALUES(stockQuantity),
                 unit = VALUES(unit),
                 minStockThreshold = VALUES(minStockThreshold),
+                description = VALUES(description),
+                imageUrl = IF(:imageAction = 'keep', imageUrl, VALUES(imageUrl)),
                 lastRestockedAt = VALUES(lastRestockedAt)
         ");
+        $oldUrls = [];
+        foreach ($pdo->query("SELECT id, imageUrl FROM products")->fetchAll() as $row) $oldUrls[(int)$row['id']] = (string)$row['imageUrl'];
         foreach ($backup['products'] as $p) {
+            $remote = trim((string)($p['remoteImageUrl'] ?? ''));
+            if ($remote === 'none') { $imageAction = 'clear'; $imageUrl = ''; }
+            elseif (preg_match('#^https?://#i', $remote)) { $imageAction = 'set'; $imageUrl = substr($remote, 0, 512); }
+            else { $imageAction = 'keep'; $imageUrl = ''; }
+            $price = $p['unitPrice'] ?? $p['price'] ?? 0.0;
             $stmt->execute([
                 ':id'                => $p['id'],
                 ':name'              => $p['name'],
-                ':category'          => $p['category'] ?? 'OTHER',
-                ':price'             => $p['unitPrice'] ?? $p['price'] ?? 0.0,
+                ':category'          => $p['category'] ?? 'GENERAL',
+                ':price'             => $price,
+                ':unitPrice'         => $price,
                 ':costPrice'         => $p['costPrice'] ?? 0.0,
                 ':stockQuantity'     => $p['stockQuantity'] ?? 0.0,
-                ':unit'              => $p['unit'] ?? 'unit',
+                ':unit'              => $p['unit'] ?? 'Piece',
                 ':minStockThreshold' => $p['minStockThreshold'] ?? 5.0,
+                ':description'       => (string)($p['description'] ?? ''),
+                ':imageUrl'          => $imageUrl,
+                ':imageAction'       => $imageAction,
                 ':lastRestockedAt'   => $p['lastRestockedAt'] ?? round(microtime(true) * 1000)
             ]);
+            $prev = $oldUrls[(int)$p['id']] ?? '';
+            if ($imageAction !== 'keep' && $prev !== '' && $prev !== $imageUrl) $removedPhotos[] = $prev;
         }
     }
 
@@ -468,6 +604,9 @@ try {
     }
 
     $pdo->commit();
+
+    // Delete photo files that no product uses any more.
+    foreach (array_unique($removedPhotos) as $u) bt_forget_product_image($pdo, $u);
 
     echo json_encode([
         'status'          => 'success',

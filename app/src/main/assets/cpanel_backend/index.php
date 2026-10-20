@@ -87,7 +87,12 @@ function fmtQty($q): string {
 
 function categoryLabel(string $key): string {
     global $CATEGORIES, $LEGACY_CATEGORIES;
-    return $CATEGORIES[$key] ?? $LEGACY_CATEGORIES[$key] ?? ucfirst(strtolower(str_replace('_', ' ', $key ?: 'General')));
+    if (isset($CATEGORIES[$key])) return $CATEGORIES[$key];
+    if (isset($LEGACY_CATEGORIES[$key])) return $LEGACY_CATEGORIES[$key];
+    $key = trim($key);
+    if ($key === '') return 'General';
+    // Old SHOUTY_KEYS are prettified; names a business typed ("Pastries") are shown as-is.
+    return preg_match('/^[A-Z0-9_]+$/', $key) ? ucfirst(strtolower(str_replace('_', ' ', $key))) : $key;
 }
 
 function methodLabel(string $m): string {
@@ -123,6 +128,21 @@ function csrfField(): string {
 
 function jsonAttr($data): string {
     return e(json_encode($data, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT));
+}
+
+/**
+ * Product image with a coloured ring (same look as the app): the uploaded photo, or the
+ * first letter on a tinted tile. If the photo fails to load, the letter underneath shows.
+ */
+function productThumb(array $p, int $size = 44): string {
+    $tone = avatarTone((string)($p['category'] ?? ''));
+    $letter = e(mb_strtoupper(mb_substr(trim((string)($p['name'] ?? '?')), 0, 1)) ?: '?');
+    $url = (string)($p['imageUrl'] ?? '');
+    $img = preg_match('#^https?://#i', $url)
+        ? '<img src="' . e($url) . '" alt="" loading="lazy" onerror="this.remove()">'
+        : '';
+    return '<span class="thumb ring-' . $tone . '" style="width:' . $size . 'px;height:' . $size . 'px">'
+        . '<span class="thumb-in bg-tone-' . $tone . '">' . $letter . $img . '</span></span>';
 }
 
 /** Inline Lucide-style icons (stroke based, inherit currentColor). */
@@ -309,6 +329,12 @@ function renderHead(string $title): void { ?>
   .text-success { color: var(--success); } .text-danger { color: var(--danger); } .text-warning { color: var(--warning); } .text-primary { color: var(--primary); }
   .avatar { width: 40px; height: 40px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px; flex-shrink: 0; }
   .tile { width: 40px; height: 40px; border-radius: 12px; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
+  /* Product image with ring (matches the app): accent colour at partial opacity, small gap. */
+  .thumb { display: inline-flex; flex-shrink: 0; padding: 2px; border-radius: 14px; border: 2px solid color-mix(in srgb, var(--tc) 45%, transparent); }
+  .thumb-in { position: relative; flex: 1; border-radius: 9px; overflow: hidden; display: flex; align-items: center; justify-content: center; font-weight: 700; }
+  .thumb-in img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .ring-primary { --tc: var(--primary); } .ring-success { --tc: var(--success); } .ring-warning { --tc: var(--warning); }
+  .ring-danger { --tc: var(--danger); } .ring-info { --tc: var(--info); } .ring-neutral { --tc: var(--muted); }
 
   /* ---------- Tables ---------- */
   .table { width: 100%; font-size: 14px; border-collapse: separate; border-spacing: 0; }
@@ -485,6 +511,7 @@ if (!empty($DB_NAME) && !empty($DB_USER)) {
                 minStockThreshold DECIMAL(12,2) DEFAULT 5.00,
                 description TEXT NULL,
                 imageUri VARCHAR(512) DEFAULT '',
+                imageUrl VARCHAR(512) NOT NULL DEFAULT '',
                 lastRestockedAt BIGINT DEFAULT 0
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -593,6 +620,7 @@ if (!empty($DB_NAME) && !empty($DB_USER)) {
         $addColumnIfMissing($db, 'products', 'unit', "VARCHAR(32) NOT NULL DEFAULT 'Piece'");
         $addColumnIfMissing($db, 'products', 'lastRestockedAt', "BIGINT NOT NULL DEFAULT 0");
         $addColumnIfMissing($db, 'products', 'description', "TEXT NULL");
+        $addColumnIfMissing($db, 'products', 'imageUrl', "VARCHAR(512) NOT NULL DEFAULT ''");
 
         // Guarantee sales order columns
         $addColumnIfMissing($db, 'sales_orders', 'balanceDue', "DECIMAL(12,2) NOT NULL DEFAULT 0.00");
@@ -618,6 +646,85 @@ if (!empty($DB_NAME) && !empty($DB_USER)) {
     }
 } else {
     $dbError = null; // first run: nothing configured yet, not an error
+}
+
+
+// ----------------------------------------------------
+// PRODUCT PHOTOS (shared by sync.php and index.php; keep both copies in sync)
+// Photos live in ./uploads/products/ next to this file, named by content hash.
+// ----------------------------------------------------
+if (!function_exists('bt_store_product_image')) {
+    function bt_uploads_dir(): string {
+        $dir = __DIR__ . '/uploads/products';
+        if (!is_dir($dir)) @mkdir($dir, 0755, true);
+        // Never serve listings or run scripts from the uploads folder. (php_flag is avoided on
+        // purpose: it breaks the folder with a 500 error on PHP-FPM hosts.)
+        $ht = __DIR__ . '/uploads/.htaccess';
+        if (!file_exists($ht)) {
+            @file_put_contents($ht, "Options -Indexes\nRemoveHandler .php .phtml .php3 .php4 .php5 .php7 .php8 .phar\n"
+                . "<FilesMatch \"\\.(php[0-9]?|phtml|phar|pl|py|cgi|sh)$\">\n"
+                . "  <IfModule mod_authz_core.c>\n    Require all denied\n  </IfModule>\n"
+                . "  <IfModule !mod_authz_core.c>\n    Deny from all\n  </IfModule>\n</FilesMatch>\n");
+        }
+        if (!file_exists(__DIR__ . '/uploads/index.html')) @file_put_contents(__DIR__ . '/uploads/index.html', '');
+        if (!file_exists($dir . '/index.html')) @file_put_contents($dir . '/index.html', '');
+        return $dir;
+    }
+
+    /** Public URL of the uploads folder, e.g. https://example.com/biztrack/uploads/products */
+    function bt_uploads_base_url(): string {
+        $https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+            || strtolower((string)($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '')) === 'https';
+        $host = preg_replace('/[^A-Za-z0-9.\-:\[\]]/', '', (string)($_SERVER['HTTP_HOST'] ?? 'localhost'));
+        $dir = rtrim(str_replace('\\', '/', dirname((string)($_SERVER['SCRIPT_NAME'] ?? '/'))), '/');
+        return ($https ? 'https' : 'http') . '://' . $host . $dir . '/uploads/products';
+    }
+
+    /**
+     * Validates and stores an uploaded image ($_FILES entry). Returns [url, null] or [null, error].
+     * Accepts JPEG, PNG and WebP up to 6 MB. With GD available the image is resized to at most
+     * 1024px and re-encoded as JPEG, which also strips anything embedded in the file.
+     */
+    function bt_store_product_image(array $file): array {
+        if (($file['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) return [null, 'Upload failed (code ' . (int)($file['error'] ?? -1) . ').'];
+        if (!is_uploaded_file($file['tmp_name'] ?? '')) return [null, 'Invalid upload.'];
+        if ((int)$file['size'] <= 0 || (int)$file['size'] > 6 * 1024 * 1024) return [null, 'Photo must be smaller than 6 MB.'];
+        $info = @getimagesize($file['tmp_name']);
+        $types = [IMAGETYPE_JPEG => 'jpg', IMAGETYPE_PNG => 'png'];
+        if (defined('IMAGETYPE_WEBP')) $types[IMAGETYPE_WEBP] = 'webp';
+        if (!$info || !isset($types[$info[2]])) return [null, 'Only JPEG, PNG or WebP photos are allowed.'];
+
+        $bytes = null;
+        $ext = $types[$info[2]];
+        if (function_exists('imagecreatefromstring') && function_exists('imagejpeg')) {
+            $src = @imagecreatefromstring((string)file_get_contents($file['tmp_name']));
+            if ($src) {
+                $w = imagesx($src); $h = imagesy($src);
+                $scale = min(1, 1024 / max($w, $h));
+                $nw = max(1, (int)round($w * $scale)); $nh = max(1, (int)round($h * $scale));
+                $dst = imagecreatetruecolor($nw, $nh);
+                imagefill($dst, 0, 0, imagecolorallocate($dst, 255, 255, 255)); // flatten transparency onto white
+                imagecopyresampled($dst, $src, 0, 0, 0, 0, $nw, $nh, $w, $h);
+                ob_start(); imagejpeg($dst, null, 85); $bytes = ob_get_clean();
+                $src = $dst = null; // GD images are freed automatically (imagedestroy is deprecated)
+                $ext = 'jpg';
+            }
+        }
+        if ($bytes === null) $bytes = (string)file_get_contents($file['tmp_name']);
+
+        $name = sha1($bytes) . '.' . $ext;
+        $path = bt_uploads_dir() . '/' . $name;
+        if (!file_exists($path) && @file_put_contents($path, $bytes, LOCK_EX) === false) return [null, 'Could not save the photo on the server.'];
+        return [bt_uploads_base_url() . '/' . $name, null];
+    }
+
+    /** Deletes a stored photo if no product uses it any more. */
+    function bt_forget_product_image(PDO $db, string $url): void {
+        if ($url === '' || !preg_match('#/uploads/products/([a-f0-9]{40}\.(?:jpg|png|webp))$#', $url, $m)) return;
+        $q = $db->prepare("SELECT COUNT(*) FROM products WHERE imageUrl = ?");
+        $q->execute([$url]);
+        if ((int)$q->fetchColumn() === 0) @unlink(bt_uploads_dir() . '/' . $m[1]);
+    }
 }
 
 // ----------------------------------------------------
@@ -787,8 +894,16 @@ $settings = $stmt->fetch() ?: [
 ];
 $currency = $settings['currencySymbol'] ?: 'GH₵';
 
+// Built-in key, an existing category, or a new name the user typed (same rules as the app).
 $validCategory = function (string $c) use ($CATEGORIES, $LEGACY_CATEGORIES): string {
-    return isset($CATEGORIES[$c]) || isset($LEGACY_CATEGORIES[$c]) ? $c : 'GENERAL';
+    $c = trim(preg_replace('/\s+/u', ' ', strip_tags($c)));
+    $c = function_exists('mb_substr') ? mb_substr($c, 0, 40) : substr($c, 0, 40);
+    if ($c === '') return 'GENERAL';
+    if (isset($CATEGORIES[$c]) || isset($LEGACY_CATEGORIES[$c])) return $c;
+    foreach ($CATEGORIES as $k => $label) {
+        if (strcasecmp($label, $c) === 0 || strcasecmp($k, $c) === 0) return $k;
+    }
+    return $c;
 };
 $validMethod = function (string $m) use ($PAYMENT_METHODS): string {
     return isset($PAYMENT_METHODS[$m]) ? $m : 'CASH';
@@ -807,7 +922,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($action === 'create_product' || $action === 'update_product') {
         $id = (int)($_POST['id'] ?? 0);
         $name = trim($_POST['name'] ?? '');
-        $category = $validCategory((string)($_POST['category'] ?? 'GENERAL'));
+        $choice = (string)($_POST['category'] ?? 'GENERAL');
+        if ($choice === '__new__') $choice = (string)($_POST['category_new'] ?? '');
+        $category = $validCategory($choice);
+        // Typed an existing custom category with different capitals? Reuse it instead of duplicating.
+        if (!isset($CATEGORIES[$category]) && !isset($LEGACY_CATEGORIES[$category])) {
+            foreach ($db->query("SELECT DISTINCT category FROM products")->fetchAll(PDO::FETCH_COLUMN) as $existing) {
+                if (strcasecmp((string)$existing, $category) === 0) { $category = (string)$existing; break; }
+            }
+        }
         $unitPrice = max(0.0, (float)($_POST['unitPrice'] ?? 0.0));
         $costPrice = max(0.0, (float)($_POST['costPrice'] ?? 0.0));
         $stockQuantity = max(0.0, (float)($_POST['stockQuantity'] ?? 0.0));
@@ -817,10 +940,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if ($name === '') $redirect('products', 'Give the product a name.', true);
 
+        // Photo: a new upload replaces it, "remove" clears it, otherwise it is left as-is (null).
+        $photoUrl = null;
+        if (($_FILES['photo']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_NO_FILE) {
+            [$photoUrl, $photoErr] = bt_store_product_image($_FILES['photo']);
+            if ($photoErr !== null) $redirect('products', $photoErr, true);
+        } elseif (!empty($_POST['remove_photo'])) {
+            $photoUrl = '';
+        }
+
         if ($action === 'create_product') {
             $now = round(microtime(true) * 1000);
-            $stmt = $db->prepare("INSERT INTO products (name, category, price, unitPrice, costPrice, stockQuantity, unit, minStockThreshold, description, lastRestockedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-            $stmt->execute([$name, $category, $unitPrice, $unitPrice, $costPrice, $stockQuantity, $unit, $minThreshold, $description, $now]);
+            $stmt = $db->prepare("INSERT INTO products (name, category, price, unitPrice, costPrice, stockQuantity, unit, minStockThreshold, description, imageUrl, lastRestockedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+            $stmt->execute([$name, $category, $unitPrice, $unitPrice, $costPrice, $stockQuantity, $unit, $minThreshold, $description, $photoUrl ?? '', $now]);
             $prodId = $db->lastInsertId();
 
             if ($stockQuantity > 0) {
@@ -832,6 +964,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         $stmt = $db->prepare("UPDATE products SET name = ?, category = ?, price = ?, unitPrice = ?, costPrice = ?, stockQuantity = ?, unit = ?, minStockThreshold = ?, description = ? WHERE id = ?");
         $stmt->execute([$name, $category, $unitPrice, $unitPrice, $costPrice, $stockQuantity, $unit, $minThreshold, $description, $id]);
+        if ($photoUrl !== null) {
+            $old = $db->prepare("SELECT imageUrl FROM products WHERE id = ?");
+            $old->execute([$id]);
+            $oldUrl = (string)($old->fetchColumn() ?: '');
+            $db->prepare("UPDATE products SET imageUrl = ? WHERE id = ?")->execute([$photoUrl, $id]);
+            if ($oldUrl !== $photoUrl) bt_forget_product_image($db, $oldUrl);
+        }
         $redirect('products', "Saved changes to \"$name\".");
     }
 
@@ -868,7 +1007,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if ($action === 'delete_product') {
         $id = (int)$_POST['id'];
+        $old = $db->prepare("SELECT imageUrl FROM products WHERE id = ?");
+        $old->execute([$id]);
+        $oldUrl = (string)($old->fetchColumn() ?: '');
         $db->prepare("DELETE FROM products WHERE id = ?")->execute([$id]);
+        bt_forget_product_image($db, $oldUrl);
         $redirect('products', 'Product deleted. Past sales keep their records.');
     }
 
@@ -1414,7 +1557,7 @@ if ($tab === 'dashboard'):
 elseif ($tab === 'new_sale'):
     $posProducts = array_map(fn($p) => [
         'id' => (int)$p['id'], 'name' => (string)$p['name'], 'category' => (string)$p['category'],
-        'categoryLabel' => categoryLabel((string)$p['category']), 'unit' => (string)$p['unit'],
+        'categoryLabel' => categoryLabel((string)$p['category']), 'unit' => (string)$p['unit'], 'image' => (string)($p['imageUrl'] ?? ''),
         'price' => (float)$p['unitPrice'], 'stock' => (float)$p['stockQuantity'], 'min' => (float)$p['minStockThreshold'],
     ], $allProducts);
     $posCustomers = array_map(fn($c) => [
@@ -1559,11 +1702,18 @@ elseif ($tab === 'new_sale'):
                 b.className = 'product-tile';
                 b.dataset.id = p.id;
                 const low = p.stock <= p.min, out = p.stock <= 0;
-                b.innerHTML = '<div class="flex items-start justify-between gap-2 mb-3"><span class="tile bg-tone-primary"></span><span class="badge"></span></div>'
+                b.innerHTML = '<div class="flex items-start justify-between gap-2 mb-3"><span class="thumb ring-primary" style="width:48px;height:48px"><span class="thumb-in bg-tone-primary"></span></span><span class="badge"></span></div>'
                     + '<div class="font-semibold leading-snug line-clamp-2" style="min-height:2.6em"></div>'
                     + '<div class="mt-1 text-sm"><span class="font-bold tnum price"></span><span class="muted unit"></span></div>'
                     + '<span class="qty-pill badge tone-primary hidden" style="position:absolute;bottom:12px;right:12px"></span>';
-                b.querySelector('.tile').textContent = p.name.trim().charAt(0).toUpperCase() || '•';
+                const thumb = b.querySelector('.thumb-in');
+                thumb.textContent = p.name.trim().charAt(0).toUpperCase() || '•';
+                if (/^https?:\/\//i.test(p.image || '')) {
+                    const img = document.createElement('img');
+                    img.src = p.image; img.alt = ''; img.loading = 'lazy';
+                    img.onerror = () => img.remove();
+                    thumb.appendChild(img);
+                }
                 const badge = b.querySelector('.badge');
                 badge.textContent = out ? 'Out' : qtyFmt(p.stock) + ' left';
                 badge.classList.add(out ? 'tone-danger' : (low ? 'tone-warning' : 'tone-neutral'));
@@ -1924,12 +2074,13 @@ elseif ($tab === 'products'):
                         $price = (float)$p['unitPrice']; $cost = (float)$p['costPrice'];
                         $margin = ($cost > 0 && $price > 0) ? (($price - $cost) / $price) * 100 : null;
                         $pData = ['id' => (int)$p['id'], 'name' => $p['name'], 'category' => $p['category'], 'unit' => $p['unit'], 'unitPrice' => $price,
-                                  'costPrice' => $cost, 'stockQuantity' => $stock, 'minStockThreshold' => $min, 'description' => (string)($p['description'] ?? '')];
+                                  'costPrice' => $cost, 'stockQuantity' => $stock, 'minStockThreshold' => $min, 'description' => (string)($p['description'] ?? ''),
+                                  'imageUrl' => (string)($p['imageUrl'] ?? '')];
                     ?>
                         <tr data-search="<?= e(strtolower($p['name'] . ' ' . ($p['description'] ?? '') . ' ' . categoryLabel((string)$p['category']))) ?>" data-category="<?= e($p['category']) ?>" data-stock="<?= $state ?>">
                             <td>
                                 <div class="flex items-center gap-3">
-                                    <span class="tile bg-tone-<?= avatarTone((string)$p['category']) ?> font-bold"><?= e(mb_strtoupper(mb_substr(trim($p['name']), 0, 1))) ?></span>
+                                    <?= productThumb($p, 44) ?>
                                     <div class="min-w-0">
                                         <div class="font-semibold truncate max-w-[260px]"><?= e($p['name']) ?></div>
                                         <?php if (!empty($p['description'])): ?><div class="text-xs muted truncate max-w-[260px]"><?= e($p['description']) ?></div><?php endif; ?>
@@ -1969,13 +2120,26 @@ elseif ($tab === 'products'):
         <!-- Product form -->
         <div class="modal" id="productModal" role="dialog" aria-modal="true" aria-labelledby="productTitle">
             <div class="modal-panel wide">
-                <form method="POST" action="index.php" class="p-6 sm:p-8 space-y-5">
+                <form method="POST" action="index.php" enctype="multipart/form-data" class="p-6 sm:p-8 space-y-5">
                     <?= csrfField() ?>
                     <input type="hidden" name="action" value="create_product">
                     <input type="hidden" name="id" value="">
+                    <input type="hidden" name="remove_photo" value="">
                     <div class="flex items-center justify-between">
                         <h2 id="productTitle" class="text-xl font-bold">Add product</h2>
                         <button type="button" class="icon-btn" data-close aria-label="Close"><?= icon('x', 'ic-sm') ?></button>
+                    </div>
+                    <div class="flex items-center gap-4">
+                        <span class="thumb ring-primary" style="width:72px;height:72px"><span class="thumb-in bg-tone-primary" id="p_photo_preview"></span></span>
+                        <div class="flex-1 min-w-0">
+                            <div class="font-semibold">Photo</div>
+                            <p class="text-sm muted" id="p_photo_hint">Optional · JPEG, PNG or WebP up to 6 MB. Also shown in the app.</p>
+                        </div>
+                        <label class="btn btn-secondary btn-sm cursor-pointer">
+                            <?= icon('plus', 'ic-sm') ?> <span id="p_photo_btn">Choose</span>
+                            <input type="file" name="photo" id="p_photo" accept="image/jpeg,image/png,image/webp" class="sr-only">
+                        </label>
+                        <button type="button" class="icon-btn tone-danger hidden" id="p_photo_remove" aria-label="Remove photo" title="Remove photo"><?= icon('trash', 'ic-sm') ?></button>
                     </div>
                     <div>
                         <label class="label" for="p_name">Name</label>
@@ -1985,11 +2149,21 @@ elseif ($tab === 'products'):
                         <div>
                             <label class="label" for="p_category">Category</label>
                             <select class="input" id="p_category" name="category">
-                                <?php foreach ($CATEGORIES as $k => $l): ?><option value="<?= $k ?>"><?= e($l) ?></option><?php endforeach; ?>
+                                <?php $customCats = array_values(array_filter(array_keys($catsInUse), fn($k) => !isset($CATEGORIES[$k]) && !isset($LEGACY_CATEGORIES[$k]))); ?>
+                                <?php if ($customCats): ?>
+                                    <optgroup label="Your categories">
+                                        <?php foreach ($customCats as $k): ?><option value="<?= e($k) ?>"><?= e(categoryLabel((string)$k)) ?></option><?php endforeach; ?>
+                                    </optgroup>
+                                <?php endif; ?>
+                                <optgroup label="Suggested">
+                                    <?php foreach ($CATEGORIES as $k => $l): ?><option value="<?= $k ?>"><?= e($l) ?></option><?php endforeach; ?>
+                                </optgroup>
                                 <optgroup label="Older categories" id="p_legacy" hidden>
                                     <?php foreach ($LEGACY_CATEGORIES as $k => $l): ?><option value="<?= $k ?>" hidden><?= e($l) ?></option><?php endforeach; ?>
                                 </optgroup>
+                                <option value="__new__">+ New category…</option>
                             </select>
+                            <input class="input mt-2 hidden" id="p_category_new" name="category_new" maxlength="40" placeholder="Name, e.g. Pastries" autocomplete="off">
                         </div>
                         <div>
                             <label class="label" for="p_unit">Unit</label>
@@ -2071,16 +2245,28 @@ elseif ($tab === 'products'):
                 pf.name.value = isNew ? '' : p.name;
                 // Older farm categories only appear when the product already uses one.
                 const legacy = document.getElementById('p_legacy');
-                const isLegacy = !isNew && ![...pf.category.options].some(o => o.value === p.category && o.parentElement.tagName !== 'OPTGROUP');
+                const isLegacy = !isNew && [...legacy.querySelectorAll('option')].some(o => o.value === p.category);
                 legacy.hidden = !isLegacy;
                 legacy.querySelectorAll('option').forEach(o => o.hidden = !(isLegacy && o.value === p.category));
                 pf.category.value = isNew ? 'GENERAL' : p.category;
+                if (pf.category.value !== (isNew ? 'GENERAL' : p.category)) {
+                    // Category added elsewhere (e.g. the app) after this page loaded.
+                    const o = new Option(p.category, p.category, true, true);
+                    pf.category.insertBefore(o, pf.category.firstChild);
+                }
+                pf.category_new.value = '';
+                toggleNewCategory();
                 pf.unit.value = isNew ? 'Piece' : p.unit;
                 pf.unitPrice.value = isNew ? '' : p.unitPrice;
                 pf.costPrice.value = isNew || !p.costPrice ? '' : p.costPrice;
                 pf.stockQuantity.value = isNew ? 0 : p.stockQuantity;
                 pf.minStockThreshold.value = isNew ? 5 : p.minStockThreshold;
                 pf.description.value = isNew ? '' : p.description;
+                currentPhoto = isNew ? '' : (p.imageUrl || '');
+                pf.photo.value = '';
+                pf.remove_photo.value = '';
+                photoHint.textContent = defaultHint;
+                showPhoto(currentPhoto);
                 margin();
                 openModal('productModal');
             }
@@ -2090,6 +2276,44 @@ elseif ($tab === 'products'):
                 m.textContent = price > 0 && cost > 0 ? 'Profit ' + cur + ' ' + (price - cost).toFixed(2) + ' per unit · ' + Math.round((price - cost) / price * 100) + '% margin' : '';
                 m.style.color = price > 0 && cost > price ? 'var(--danger)' : '';
             }
+            // ---- Photo: preview, size check, remove ----
+            const photoPreview = document.getElementById('p_photo_preview');
+            const photoHint = document.getElementById('p_photo_hint'), defaultHint = photoHint.textContent;
+            const photoRemove = document.getElementById('p_photo_remove');
+            let currentPhoto = '';
+            function showPhoto(src) {
+                photoPreview.textContent = (pf.name.value.trim().charAt(0) || '?').toUpperCase();
+                if (src) {
+                    const img = document.createElement('img');
+                    img.src = src; img.alt = ''; img.onerror = () => img.remove();
+                    photoPreview.appendChild(img);
+                }
+                photoRemove.classList.toggle('hidden', !src);
+                document.getElementById('p_photo_btn').textContent = src ? 'Change' : 'Choose';
+            }
+            pf.photo.addEventListener('change', () => {
+                const f = pf.photo.files[0];
+                if (!f) return;
+                if (f.size > 6 * 1024 * 1024) { pf.photo.value = ''; showToast('Photo must be smaller than 6 MB.', 'danger'); return; }
+                pf.remove_photo.value = '';
+                photoHint.textContent = f.name + ' · uploads when you save';
+                showPhoto(URL.createObjectURL(f));
+            });
+            photoRemove.addEventListener('click', () => {
+                pf.photo.value = '';
+                pf.remove_photo.value = currentPhoto ? '1' : '';
+                photoHint.textContent = currentPhoto ? 'Photo will be removed when you save.' : defaultHint;
+                showPhoto('');
+            });
+            pf.name.addEventListener('input', () => { if (!photoPreview.querySelector('img')) showPhoto(''); });
+
+            function toggleNewCategory() {
+                const isNewCat = pf.category.value === '__new__';
+                pf.category_new.classList.toggle('hidden', !isNewCat);
+                pf.category_new.required = isNewCat;
+                if (isNewCat) pf.category_new.focus();
+            }
+            pf.category.addEventListener('change', toggleNewCategory);
             pf.unitPrice.addEventListener('input', margin);
             pf.costPrice.addEventListener('input', margin);
             document.querySelectorAll('[data-product-new]').forEach(b => b.addEventListener('click', () => fillProduct(null)));

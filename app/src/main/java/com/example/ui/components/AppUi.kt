@@ -27,6 +27,7 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.takeOrElse
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -110,7 +111,11 @@ fun AppCard(
                 onClick = onClick
             ) else Modifier
         )
-    Column(modifier = base.padding(contentPadding), content = content)
+    // Like Material's Surface: text and icons inside default to the matching "on" colour,
+    // otherwise they fall back to black (invisible on dark cards).
+    CompositionLocalProvider(LocalContentColor provides contentColorFor(color).takeOrElse { MaterialTheme.colorScheme.onSurface }) {
+        Column(modifier = base.padding(contentPadding), content = content)
+    }
 }
 
 /** Large-title header like an RN stack screen with `headerLargeTitle`. */

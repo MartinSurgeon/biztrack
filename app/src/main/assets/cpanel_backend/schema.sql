@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS `products` (
   `minStockThreshold` DECIMAL(12,2) NOT NULL DEFAULT 5.00,
   `description` TEXT,
   `imageUri` VARCHAR(512) NOT NULL DEFAULT '',
+  `imageUrl` VARCHAR(512) NOT NULL DEFAULT '', -- public URL of the uploaded product photo
   `lastRestockedAt` BIGINT NOT NULL DEFAULT 0,
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

@@ -688,6 +688,7 @@ class FarmViewModel(application: Application) : AndroidViewModel(application) {
     fun deleteProduct(product: ProductEntity) {
         viewModelScope.launch {
             repository.deleteProduct(product)
+            com.example.util.ProductImageStore.delete(getApplication(), product.imageUri)
             _statusMessage.emit("Product removed.")
             FarmWidgetProvider.updateAllWidgets(getApplication())
         }
@@ -893,6 +894,24 @@ class FarmViewModel(application: Application) : AndroidViewModel(application) {
     /**
      * Push all local Room data to Namecheap MySQL database.
      */
+    /**
+     * Uploads photos that exist on this phone but not yet on the server (remoteImageUrl
+     * blank) and stores the returned web addresses. Returns how many uploads failed.
+     */
+    private suspend fun uploadPendingProductPhotos(syncUrl: String, secretKey: String): Int {
+        var failed = 0
+        val pending = db.productDao().getAllProductsDirect().filter { p ->
+            p.remoteImageUrl.isBlank() && p.imageUri.isNotBlank() &&
+                !p.imageUri.startsWith("http") && !p.imageUri.startsWith("content://") &&
+                java.io.File(p.imageUri.removePrefix("file://")).exists()
+        }
+        for (p in pending) {
+            val url = CloudSyncService.uploadProductImage(syncUrl, secretKey, p.id, java.io.File(p.imageUri.removePrefix("file://")))
+            if (url == null) failed++ else repository.updateProduct(p.copy(remoteImageUrl = url))
+        }
+        return failed
+    }
+
     fun syncToCloud(
         customUrl: String? = null,
         customKey: String? = null,
@@ -928,15 +947,22 @@ class FarmViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
 
+                // 0. Upload new product photos first so the data push carries their web addresses.
+                _cloudSyncStatusMessage.value = "Uploading product photos..."
+                val photosFailed = uploadPendingProductPhotos(syncUrl, secretKey)
+
                 // 1. Gather all current Room records
                 val backupData = DatabaseBackupHelper.createBackupData(db)
 
                 _cloudSyncStatusMessage.value = "Sending data to Namecheap MySQL server..."
-                val syncResult = CloudSyncService.pushToCloud(
+                val pushResult = CloudSyncService.pushToCloud(
                     syncUrl = syncUrl,
                     secretKey = secretKey,
                     backupData = backupData
                 )
+                val syncResult = if (pushResult.success && photosFailed > 0) pushResult.copy(
+                    message = pushResult.message + " $photosFailed photo(s) could not be uploaded; they will be retried on the next sync."
+                ) else pushResult
 
                 _isCloudSyncing.value = false
                 _cloudSyncStatusMessage.value = syncResult.message

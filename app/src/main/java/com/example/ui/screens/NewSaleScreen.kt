@@ -503,7 +503,8 @@ fun ProductGridCard(
                 category = product.category,
                 name = product.name,
                 size = 64.dp,
-                shapeRadius = 16.dp
+                shapeRadius = 16.dp,
+                fallbackUrl = product.remoteImageOrBlank
             )
             StatusBadge(
                 text = when {

@@ -181,6 +181,7 @@ object DatabaseBackupHelper {
                             inStock = p.optBoolean("inStock", p.optDouble("stockQuantity", 0.0) > 0),
                             description = p.optString("description", ""),
                             imageUri = p.optString("imageUri", ""),
+                            remoteImageUrl = p.optString("remoteImageUrl", ""),
                             lastRestockedAt = p.optLong("lastRestockedAt", System.currentTimeMillis())
                         )
                     )
@@ -378,9 +379,27 @@ object DatabaseBackupHelper {
                     database.appSettingsDao().saveSettings(merged)
                 }
 
-                // 2. Products
+                // 2. Products. Restores used to overwrite each product's photo with whatever
+                // the backup/server had (often nothing), erasing photos saved on this phone.
+                // Keep this phone's photo file if it still exists; otherwise use the incoming
+                // one only if it's usable here, and fall back to the web copy for display.
                 if (backupData.products.isNotEmpty()) {
-                    database.productDao().insertAll(backupData.products)
+                    val existing = database.productDao().getAllProductsDirect().associateBy { it.id }
+                    fun isLocalFile(path: String) = path.isNotBlank() && !path.startsWith("http") && !path.startsWith("content://") &&
+                        java.io.File(path.removePrefix("file://")).exists()
+                    val merged = backupData.products.map { incoming ->
+                        val old = existing[incoming.id]
+                        val keepLocal = old?.imageUri?.takeIf { isLocalFile(it) }
+                        val incomingLocal = incoming.imageUri.takeIf { isLocalFile(it) }
+                        incoming.copy(
+                            imageUri = keepLocal ?: incomingLocal ?: "",
+                            remoteImageUrl = incoming.remoteImageUrl.ifBlank {
+                                // Older servers send the web address in imageUri.
+                                incoming.imageUri.takeIf { it.startsWith("http") } ?: old?.remoteImageUrl.orEmpty()
+                            }
+                        )
+                    }
+                    database.productDao().insertAll(merged)
                 }
 
                 // 3. Customers

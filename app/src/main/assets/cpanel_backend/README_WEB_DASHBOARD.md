@@ -58,3 +58,17 @@ Keyboard shortcuts: `N` new sale · `/` search · `Esc` close dialogs.
 1. When you add/update/delete products, sales, or debts on your laptop, `index.php` writes directly into the MySQL database.
 2. On your Android app, whenever auto-sync triggers or you tap **"Restore / Pull from Cloud"**, the mobile app immediately downloads the updated state from MySQL.
 3. Neither your mobile code nor your database schema needs to change!
+
+---
+
+## 🖼️ Product photos
+
+Photos added in the app or on the web dashboard are shared between them:
+
+- **App → web:** when the app syncs to the cloud, it first uploads new product photos to `sync.php`, then the product data. The web dashboard shows them in Products and New sale.
+- **Web → app:** photos uploaded in the web product form appear in the app after "Restore / Pull from Cloud". A restore never removes a photo that is already saved on the phone.
+- Photos are stored in an `uploads/products/` folder next to `sync.php` / `index.php` (created automatically). Make sure that folder is **writable** by PHP (permission 755 is normal on cPanel).
+- Accepted: JPEG, PNG or WebP up to 6 MB. With PHP's GD extension (enabled on most hosts) photos are resized to 1024px and saved as JPEG.
+- The folder gets its own `.htaccess` that disables directory listings and blocks scripts.
+
+**Upgrading?** Upload the new `index.php` **and** `sync.php` together. The new `imageUrl` column is added to your database automatically on first use.

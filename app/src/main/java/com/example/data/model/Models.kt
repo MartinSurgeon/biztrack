@@ -33,8 +33,24 @@ enum class ProductCategory(val displayName: String, val legacy: Boolean = false)
         fun fromKey(key: String): ProductCategory? = entries.firstOrNull { it.name.equals(key, ignoreCase = true) }
 
         /** Human label for a stored category key, including unknown/custom keys. */
-        fun labelFor(key: String): String = fromKey(key)?.displayName
-            ?: key.replace('_', ' ').lowercase().replaceFirstChar { it.uppercase() }.ifBlank { GENERAL.displayName }
+        /**
+         * Human label for a stored category. Built-in keys map to their display name,
+         * old SHOUTY_KEYS are prettified, and categories a business created themselves
+         * (stored as typed, e.g. "Pastries") are shown unchanged.
+         */
+        fun labelFor(key: String): String {
+            fromKey(key)?.let { return it.displayName }
+            val trimmed = key.trim()
+            if (trimmed.isEmpty()) return GENERAL.displayName
+            return if (trimmed.matches(Regex("[A-Z0-9_]+"))) trimmed.replace('_', ' ').lowercase().replaceFirstChar { it.uppercase() } else trimmed
+        }
+
+        /** Normalises a typed category name; reuses a built-in key when the name matches one. */
+        fun fromUserInput(name: String): String {
+            val clean = name.trim().replace(Regex("\\s+"), " ").take(40)
+            if (clean.isEmpty()) return GENERAL.name
+            return entries.firstOrNull { !it.legacy && (it.displayName.equals(clean, true) || it.name.equals(clean, true)) }?.name ?: clean
+        }
     }
 }
 
@@ -55,9 +71,22 @@ data class ProductEntity(
     val minStockThreshold: Double = 5.0, // Reorder / low stock alert threshold
     val inStock: Boolean = true,
     val description: String = "",
-    val imageUri: String = "", // Custom image URI or image URL or drawable key
-    val lastRestockedAt: Long = System.currentTimeMillis()
-)
+    val imageUri: String = "", // Photo on this phone (file path), or a web URL
+    val lastRestockedAt: Long = System.currentTimeMillis(),
+    /**
+     * Web address of the photo's copy on the cloud server. "" = not uploaded yet,
+     * [REMOTE_IMAGE_REMOVED] = the user removed the photo (tells the server to clear it).
+     */
+    val remoteImageUrl: String = ""
+) {
+    companion object {
+        const val REMOTE_IMAGE_REMOVED = "none"
+    }
+
+    /** Web copy usable for display, if any. */
+    val remoteImageOrBlank: String
+        get() = if (remoteImageUrl.startsWith("http://") || remoteImageUrl.startsWith("https://")) remoteImageUrl else ""
+}
 
 @JsonClass(generateAdapter = true)
 @Entity(tableName = "inventory_logs")

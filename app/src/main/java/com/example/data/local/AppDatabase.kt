@@ -22,7 +22,7 @@ import java.io.File
         PaymentEntity::class,
         AppSettingsEntity::class
     ],
-    version = 6,
+    version = 7,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -96,6 +96,13 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        // v7: web address of the product photo uploaded to the cloud server (local file stays in imageUri).
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                safeExec(db, "ALTER TABLE products ADD COLUMN remoteImageUrl TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
         val MIGRATION_1_6 = object : Migration(1, 6) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 MIGRATION_1_2.migrate(db)
@@ -139,7 +146,7 @@ abstract class AppDatabase : RoomDatabase() {
                     "naadriel_farm_db"
                 )
                 .addMigrations(
-                    MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6,
+                    MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7,
                     MIGRATION_1_6, MIGRATION_2_6, MIGRATION_3_6, MIGRATION_4_6
                 )
                 .addCallback(DatabaseCallback(appContext))

@@ -1,6 +1,9 @@
 package com.example.ui.screens
 
 import android.net.Uri
+import android.widget.Toast
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.compose.animation.AnimatedVisibility
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -16,6 +19,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
@@ -25,7 +29,12 @@ import com.example.data.model.CommonUnits
 import com.example.data.model.ProductCategory
 import com.example.data.model.ProductEntity
 import com.example.ui.components.*
+import com.example.ui.theme.AppTheme
 import com.example.util.Formatters
+import com.example.util.ProductImageStore
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private enum class StockFilter(val label: String) { ALL("All"), LOW("Low stock"), OUT("Out of stock") }
 
@@ -156,6 +165,7 @@ fun ProductsCatalogScreen(
             initialProduct = target,
             isNew = isAddingNew,
             currencySymbol = settings.currencySymbol,
+            categoryUsage = remember(products) { products.groupingBy { it.category }.eachCount() },
             onDismiss = { productToEdit = null; isAddingNew = false },
             onSave = { updated ->
                 onSaveProduct(updated)
@@ -191,8 +201,11 @@ fun ProductFormDialog(
     currencySymbol: String,
     onDismiss: () -> Unit,
     onSave: (ProductEntity) -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    categoryUsage: Map<String, Int> = emptyMap()
 ) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var name by remember { mutableStateOf(initialProduct.name) }
     var category by remember { mutableStateOf(initialProduct.category) }
     var unit by remember { mutableStateOf(initialProduct.unit) }
@@ -203,21 +216,47 @@ fun ProductFormDialog(
     var description by remember { mutableStateOf(initialProduct.description) }
     var inStock by remember { mutableStateOf(initialProduct.inStock) }
     var imageUri by remember { mutableStateOf(initialProduct.imageUri) }
+    // Cloud copy of the photo; shown when this phone has no local file (e.g. after a restore).
+    var remoteUrl by remember { mutableStateOf(initialProduct.remoteImageOrBlank) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
 
-    val photoPickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
-        if (uri != null) imageUri = uri.toString()
-    }
+    var importingPhoto by remember { mutableStateOf(false) }
 
-    // Offer the modern categories, plus the product's current one if it is a legacy key.
-    val categoryOptions = remember(initialProduct.category) {
-        val base = ProductCategory.selectable.map { it.name }
-        if (initialProduct.category in base) base else listOf(initialProduct.category) + base
+    // Copy the picked photo into app storage: picker links stop working after a restart.
+    val photoPickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri: Uri? ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        importingPhoto = true
+        scope.launch {
+            val saved = withContext(Dispatchers.IO) { ProductImageStore.import(context, uri) }
+            importingPhoto = false
+            if (saved == null) {
+                Toast.makeText(context, "Couldn't use that photo. Try another one.", Toast.LENGTH_SHORT).show()
+            } else {
+                // Discard a photo picked earlier in this same edit; keep the saved one until Save.
+                if (imageUri != initialProduct.imageUri) ProductImageStore.delete(context, imageUri)
+                imageUri = saved
+                remoteUrl = "" // the new photo replaces the cloud copy and will be uploaded on next sync
+            }
+        }
     }
-    val canSave = name.isNotBlank() && priceText.toDoubleOrNull() != null
+    val pickPhoto = { photoPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }
+
+    // Older products may still point at a picker link that no longer opens.
+    val photoBroken by produceState(false, imageUri) {
+        value = imageUri.isNotBlank() && remoteUrl.isBlank() && !withContext(Dispatchers.IO) { ProductImageStore.isAvailable(context, imageUri) }
+    }
+    val hasPhoto = imageUri.isNotBlank() || remoteUrl.isNotBlank()
+
+    val canSave = name.isNotBlank() && priceText.toDoubleOrNull() != null && !importingPhoto
+
+    // Leaving without saving: drop a photo that was imported during this edit.
+    val dismiss = {
+        if (imageUri != initialProduct.imageUri) ProductImageStore.delete(context, imageUri)
+        onDismiss()
+    }
 
     ModalBottomSheet(
-        onDismissRequest = onDismiss,
+        onDismissRequest = dismiss,
         containerColor = MaterialTheme.colorScheme.surface,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ) {
@@ -232,30 +271,38 @@ fun ProductFormDialog(
             Text(if (isNew) "New product" else "Edit product", style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.onSurface)
 
             Row(verticalAlignment = Alignment.CenterVertically) {
-                ProductThumbnail(imageUri, category, name.ifBlank { "Product" }, size = 64.dp, shapeRadius = 18.dp)
+                Box(contentAlignment = Alignment.Center) {
+                    ProductThumbnail(imageUri, category, name.ifBlank { "Product" }, size = 72.dp, shapeRadius = 20.dp, fallbackUrl = remoteUrl)
+                    if (importingPhoto) CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 3.dp)
+                }
                 Spacer(Modifier.width(14.dp))
                 Column(Modifier.weight(1f)) {
                     Text("Photo", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface)
-                    Text("Optional — shown on the sale screen", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        when {
+                            importingPhoto -> "Adding photo…"
+                            photoBroken -> "This photo can't be shown anymore. Choose it again."
+                            else -> "Optional · shown on the sale screen"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (photoBroken && !importingPhoto) AppTheme.status.warning else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
-                AppButton(if (imageUri.isBlank()) "Choose" else "Change", { photoPickerLauncher.launch("image/*") },
-                    variant = ButtonVariant.SECONDARY, icon = Icons.Default.PhotoCamera, height = 40.dp)
-                if (imageUri.isNotBlank()) {
+                AppButton(if (!hasPhoto || photoBroken) "Choose" else "Change", pickPhoto,
+                    variant = ButtonVariant.SECONDARY, icon = Icons.Default.PhotoCamera, height = 40.dp, enabled = !importingPhoto)
+                if (hasPhoto && !importingPhoto) {
                     Spacer(Modifier.width(6.dp))
-                    CircleIconButton(Icons.Default.Close, "Remove photo", { imageUri = "" }, tone = Tone.DANGER, size = 36.dp)
+                    CircleIconButton(Icons.Default.Close, "Remove photo", {
+                        if (imageUri != initialProduct.imageUri) ProductImageStore.delete(context, imageUri)
+                        imageUri = ""
+                        remoteUrl = ""
+                    }, tone = Tone.DANGER, size = 36.dp)
                 }
             }
 
             AppTextField(name, { name = it }, label = "Name", placeholder = "e.g. Bottled water 500ml, Haircut")
 
-            Column {
-                Text("Category", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.padding(start = 4.dp, bottom = 8.dp))
-                ChipRow {
-                    categoryOptions.forEach { key ->
-                        PillChip(ProductCategory.labelFor(key), category == key, { category = key }, icon = categoryIcon(key))
-                    }
-                }
-            }
+            CategoryPicker(selected = category, usage = categoryUsage, onSelect = { category = it })
 
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 AppTextField(priceText, { priceText = it }, label = "Selling price ($currencySymbol)", placeholder = "0.00",
@@ -296,6 +343,8 @@ fun ProductFormDialog(
                 AppButton(
                     text = if (isNew) "Add product" else "Save changes",
                     onClick = {
+                        // The photo was replaced or removed: free the old saved file.
+                        if (imageUri != initialProduct.imageUri) ProductImageStore.delete(context, initialProduct.imageUri)
                         onSave(
                             initialProduct.copy(
                                 name = name.trim(),
@@ -307,7 +356,13 @@ fun ProductFormDialog(
                                 minStockThreshold = thresholdText.toDoubleOrNull() ?: initialProduct.minStockThreshold,
                                 description = description.trim(),
                                 inStock = inStock,
-                                imageUri = imageUri.trim()
+                                imageUri = imageUri.trim(),
+                                // Tell cloud sync what changed: new photo -> upload it, removed -> clear the server copy.
+                                remoteImageUrl = when {
+                                    imageUri != initialProduct.imageUri && imageUri.isNotBlank() -> ""
+                                    !hasPhoto && (initialProduct.imageUri.isNotBlank() || initialProduct.remoteImageOrBlank.isNotBlank()) -> ProductEntity.REMOTE_IMAGE_REMOVED
+                                    else -> initialProduct.remoteImageUrl
+                                }
                             )
                         )
                     },
@@ -331,6 +386,69 @@ fun ProductFormDialog(
             },
             onDismiss = { showDeleteConfirm = false }
         )
+    }
+}
+
+/**
+ * Category choice with a small, relevant set of options:
+ * the business's own categories first (most used), a few common suggestions, the rest
+ * behind "More", and "+ New" to create one inline without leaving the form.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun CategoryPicker(selected: String, usage: Map<String, Int>, onSelect: (String) -> Unit) {
+    var showAll by remember { mutableStateOf(false) }
+    var adding by remember { mutableStateOf(false) }
+    var newName by remember { mutableStateOf("") }
+    // Categories created in this form session, so they stay visible after being picked.
+    var created by remember { mutableStateOf(listOf<String>()) }
+
+    val used = remember(usage) { usage.entries.sortedByDescending { it.value }.map { it.key } }
+    val primary = remember(used, created, selected) {
+        val suggestions = listOf(ProductCategory.GENERAL, ProductCategory.FOOD_DRINKS, ProductCategory.GROCERIES, ProductCategory.SERVICES).map { it.name }
+        (listOf(selected) + created + used + suggestions).distinctBy { it.lowercase() }.take(maxOf(6, 1 + created.size + used.size.coerceAtMost(6)))
+    }
+    val rest = remember(primary) { ProductCategory.selectable.map { it.name }.filter { k -> primary.none { it.equals(k, true) } } }
+
+    fun addNew() {
+        val name = newName.trim()
+        if (name.isEmpty()) return
+        // Reuse an existing category typed with different capitalisation instead of duplicating it.
+        val existing = (used + created).firstOrNull { ProductCategory.labelFor(it).equals(name, true) }
+        val key = existing ?: ProductCategory.fromUserInput(name)
+        if (existing == null && ProductCategory.fromKey(key) == null) created = created + key
+        onSelect(key)
+        newName = ""
+        adding = false
+    }
+
+    Column {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(start = 4.dp, bottom = 8.dp)) {
+            Text("Category", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.weight(1f))
+            Text(ProductCategory.labelFor(selected), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+        }
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            (primary + if (showAll) rest else emptyList()).forEach { key ->
+                PillChip(ProductCategory.labelFor(key), selected.equals(key, true), { onSelect(key) }, icon = categoryIcon(key))
+            }
+            if (rest.isNotEmpty()) {
+                PillChip(if (showAll) "Less" else "More", false, { showAll = !showAll },
+                    icon = if (showAll) Icons.Default.ExpandLess else Icons.Default.ExpandMore)
+            }
+            if (!adding) PillChip("New", false, { adding = true }, icon = Icons.Default.Add)
+        }
+        AnimatedVisibility(adding) {
+            Row(Modifier.padding(top = 10.dp), verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                AppTextField(
+                    value = newName,
+                    onValueChange = { newName = it.take(40) },
+                    placeholder = "New category, e.g. Pastries",
+                    modifier = Modifier.weight(1f)
+                )
+                AppButton("Add", { addNew() }, enabled = newName.isNotBlank(), height = 52.dp)
+                CircleIconButton(Icons.Default.Close, "Cancel new category", { adding = false; newName = "" }, size = 44.dp)
+            }
+        }
     }
 }
 
@@ -359,7 +477,7 @@ fun StockAdjustmentDialog(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                ProductThumbnail(product.imageUri, product.category, product.name, size = 48.dp, shapeRadius = 14.dp)
+                ProductThumbnail(product.imageUri, product.category, product.name, size = 48.dp, shapeRadius = 14.dp, fallbackUrl = product.remoteImageOrBlank)
                 Spacer(Modifier.width(12.dp))
                 Column {
                     Text("Adjust stock", style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.onSurface)
@@ -411,7 +529,7 @@ fun ProductCatalogGridCard(
 
     AppCard(onClick = onEdit, contentPadding = PaddingValues(14.dp), modifier = Modifier.testTag("product_catalog_card_${product.id}")) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            ProductThumbnail(product.imageUri, product.category, product.name, size = 56.dp, shapeRadius = 16.dp)
+            ProductThumbnail(product.imageUri, product.category, product.name, size = 56.dp, shapeRadius = 16.dp, fallbackUrl = product.remoteImageOrBlank)
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(product.name, style = MaterialTheme.typography.titleSmall, color = c.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)

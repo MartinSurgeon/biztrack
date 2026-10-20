@@ -9,6 +9,7 @@ import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
 
@@ -127,6 +128,47 @@ object CloudSyncService {
                 success = false,
                 message = "Cloud connection failed: ${e.localizedMessage ?: "Unknown network error"}"
             )
+        }
+    }
+
+    /**
+     * Uploads one product photo to sync.php (action UPLOAD_IMAGE) and returns its public
+     * URL, or null if the upload failed (e.g. the server's sync.php predates photo sync).
+     */
+    suspend fun uploadProductImage(
+        syncUrl: String,
+        secretKey: String,
+        productId: Long,
+        file: java.io.File
+    ): String? = withContext(Dispatchers.IO) {
+        val url = normalizeSyncUrl(syncUrl)
+        if (url.isBlank() || !file.exists()) return@withContext null
+        try {
+            val body = okhttp3.MultipartBody.Builder()
+                .setType(okhttp3.MultipartBody.FORM)
+                .addFormDataPart("action", "UPLOAD_IMAGE")
+                .addFormDataPart("productId", productId.toString())
+                .addFormDataPart("image", "product_$productId.jpg", file.asRequestBody("image/jpeg".toMediaType()))
+                .build()
+            val request = Request.Builder()
+                .url(url)
+                .post(body)
+                .addHeader("User-Agent", "BizTrackPOS/1.0")
+                .addHeader("X-Sync-Action", "UPLOAD_IMAGE")
+                .addHeader("X-Api-Key", secretKey.trim())
+                .build()
+            okHttpClient.newCall(request).execute().use { response ->
+                val text = response.body?.string().orEmpty()
+                if (!response.isSuccessful) {
+                    Log.w(TAG, "Photo upload failed (HTTP ${response.code}): ${text.take(160)}")
+                    return@withContext null
+                }
+                val json = org.json.JSONObject(text)
+                json.optString("url").takeIf { json.optString("status") == "success" && it.startsWith("http") }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Photo upload error", e)
+            null
         }
     }
 
