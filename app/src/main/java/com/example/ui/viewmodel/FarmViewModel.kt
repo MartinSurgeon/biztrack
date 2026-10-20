@@ -34,6 +34,11 @@ class FarmViewModel(application: Application) : AndroidViewModel(application) {
 
     private val db = AppDatabase.getDatabase(application)
 
+    init {
+        // New records get IDs from this phone's own range so they never clash with the web dashboard.
+        com.example.data.local.RecordIds.init(application, db)
+    }
+
     private val repository = FarmRepository(
         productDao = db.productDao(),
         customerDao = db.customerDao(),

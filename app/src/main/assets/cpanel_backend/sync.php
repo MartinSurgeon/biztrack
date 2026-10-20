@@ -57,13 +57,38 @@ try {
     exit;
 }
 
-// Keep older databases compatible with photo sync (adds missing columns once).
-foreach (['imageUrl' => "VARCHAR(512) NOT NULL DEFAULT ''", 'unitPrice' => "DECIMAL(12,2) NOT NULL DEFAULT 0.00", 'description' => "TEXT NULL"] as $col => $def) {
-    try {
-        if ($pdo->query("SHOW COLUMNS FROM products LIKE '$col'")->rowCount() === 0) {
-            $pdo->exec("ALTER TABLE products ADD COLUMN `$col` $def");
-        }
-    } catch (Exception $e) { /* table may not exist yet */ }
+// Keep databases created by older versions compatible (adds missing columns once).
+$requiredColumns = [
+    'products' => [
+        'imageUrl' => "VARCHAR(512) NOT NULL DEFAULT ''",
+        'unitPrice' => "DECIMAL(12,2) NOT NULL DEFAULT 0.00",
+        'description' => "TEXT NULL",
+    ],
+    'customers' => [
+        'currentBalance' => "DECIMAL(12,2) NOT NULL DEFAULT 0.00",
+        'totalDebt' => "DECIMAL(12,2) NOT NULL DEFAULT 0.00",
+        'totalPurchases' => "DECIMAL(12,2) NOT NULL DEFAULT 0.00",
+        'totalPurchased' => "DECIMAL(12,2) NOT NULL DEFAULT 0.00",
+        'createdAt' => "BIGINT NOT NULL DEFAULT 0",
+    ],
+    'sales_orders' => [
+        'invoiceNumber' => "VARCHAR(100) NOT NULL DEFAULT ''",
+        'customerWhatsapp' => "VARCHAR(64) NOT NULL DEFAULT ''",
+        'balanceDue' => "DECIMAL(12,2) NOT NULL DEFAULT 0.00",
+        'debtAmount' => "DECIMAL(12,2) NOT NULL DEFAULT 0.00",
+        'discountAmount' => "DECIMAL(12,2) NOT NULL DEFAULT 0.00",
+        'smsSentCount' => "INT NOT NULL DEFAULT 0",
+        'lastSmsTimestamp' => "BIGINT NULL",
+    ],
+];
+foreach ($requiredColumns as $table => $columns) {
+    foreach ($columns as $col => $def) {
+        try {
+            if ($pdo->query("SHOW COLUMNS FROM `$table` LIKE '$col'")->rowCount() === 0) {
+                $pdo->exec("ALTER TABLE `$table` ADD COLUMN `$col` $def");
+            }
+        } catch (Exception $e) { /* table may not exist yet */ }
+    }
 }
 
 // ----------------------------------------------------
@@ -452,11 +477,12 @@ try {
         }
     }
 
-    // 2. Sync Customers
+    // 2. Sync Customers. Older and newer column names are both written: the web dashboard
+    // reads currentBalance / totalPurchases, older code reads totalDebt / totalPurchased.
     if (!empty($backup['customers'])) {
         $stmt = $pdo->prepare("
-            INSERT INTO customers (id, name, phone, whatsapp, address, notes, totalDebt, totalPurchased, totalPaid, lastTransactionDate)
-            VALUES (:id, :name, :phone, :whatsapp, :address, :notes, :totalDebt, :totalPurchased, :totalPaid, :lastTransactionDate)
+            INSERT INTO customers (id, name, phone, whatsapp, address, notes, totalDebt, currentBalance, totalPurchased, totalPurchases, totalPaid, createdAt, lastTransactionDate)
+            VALUES (:id, :name, :phone, :whatsapp, :address, :notes, :totalDebt, :currentBalance, :totalPurchased, :totalPurchases, :totalPaid, :createdAt, :lastTransactionDate)
             ON DUPLICATE KEY UPDATE
                 name = VALUES(name),
                 phone = VALUES(phone),
@@ -464,11 +490,16 @@ try {
                 address = VALUES(address),
                 notes = VALUES(notes),
                 totalDebt = VALUES(totalDebt),
+                currentBalance = VALUES(currentBalance),
                 totalPurchased = VALUES(totalPurchased),
+                totalPurchases = VALUES(totalPurchases),
                 totalPaid = VALUES(totalPaid),
                 lastTransactionDate = VALUES(lastTransactionDate)
         ");
         foreach ($backup['customers'] as $c) {
+            $balance = (float)($c['currentBalance'] ?? $c['totalDebt'] ?? 0.0);
+            $purchases = (float)($c['totalPurchases'] ?? $c['totalPurchased'] ?? 0.0);
+            $created = $c['createdAt'] ?? $c['lastTransactionDate'] ?? round(microtime(true) * 1000);
             $stmt->execute([
                 ':id'                  => $c['id'],
                 ':name'                => $c['name'],
@@ -476,47 +507,60 @@ try {
                 ':whatsapp'            => $c['whatsapp'] ?? '',
                 ':address'             => $c['address'] ?? '',
                 ':notes'               => $c['notes'] ?? '',
-                ':totalDebt'           => $c['currentBalance'] ?? $c['totalDebt'] ?? 0.0,
-                ':totalPurchased'      => $c['totalPurchases'] ?? $c['totalPurchased'] ?? 0.0,
+                ':totalDebt'           => $balance,
+                ':currentBalance'      => $balance,
+                ':totalPurchased'      => $purchases,
+                ':totalPurchases'      => $purchases,
                 ':totalPaid'           => $c['totalPaid'] ?? 0.0,
-                ':lastTransactionDate' => $c['createdAt'] ?? $c['lastTransactionDate'] ?? round(microtime(true) * 1000)
+                ':createdAt'           => $created,
+                ':lastTransactionDate' => $created
             ]);
         }
     }
 
-    // 3. Sync Sales Orders
+    // 3. Sync Sales Orders. balanceDue (read by the dashboard) and debtAmount (older code)
+    // are both written, and the app's invoice number is kept.
     if (!empty($backup['salesOrders'])) {
         $stmt = $pdo->prepare("
-            INSERT INTO sales_orders (id, customerId, customerName, customerPhone, itemsJson, totalAmount, amountPaid, debtAmount, discountAmount, paymentStatus, paymentMethod, notes, timestamp, lastSmsTimestamp)
-            VALUES (:id, :customerId, :customerName, :customerPhone, :itemsJson, :totalAmount, :amountPaid, :debtAmount, :discountAmount, :paymentStatus, :paymentMethod, :notes, :timestamp, :lastSmsTimestamp)
+            INSERT INTO sales_orders (id, invoiceNumber, customerId, customerName, customerPhone, customerWhatsapp, itemsJson, totalAmount, amountPaid, debtAmount, balanceDue, discountAmount, paymentStatus, paymentMethod, notes, timestamp, smsSentCount, lastSmsTimestamp)
+            VALUES (:id, :invoiceNumber, :customerId, :customerName, :customerPhone, :customerWhatsapp, :itemsJson, :totalAmount, :amountPaid, :debtAmount, :balanceDue, :discountAmount, :paymentStatus, :paymentMethod, :notes, :timestamp, :smsSentCount, :lastSmsTimestamp)
             ON DUPLICATE KEY UPDATE
+                invoiceNumber = IF(VALUES(invoiceNumber) = '', invoiceNumber, VALUES(invoiceNumber)),
                 customerName = VALUES(customerName),
                 customerPhone = VALUES(customerPhone),
+                customerWhatsapp = VALUES(customerWhatsapp),
                 itemsJson = VALUES(itemsJson),
                 totalAmount = VALUES(totalAmount),
                 amountPaid = VALUES(amountPaid),
                 debtAmount = VALUES(debtAmount),
+                balanceDue = VALUES(balanceDue),
                 discountAmount = VALUES(discountAmount),
                 paymentStatus = VALUES(paymentStatus),
                 paymentMethod = VALUES(paymentMethod),
                 notes = VALUES(notes),
+                smsSentCount = VALUES(smsSentCount),
                 lastSmsTimestamp = VALUES(lastSmsTimestamp)
         ");
         foreach ($backup['salesOrders'] as $s) {
+            $due = (float)($s['balanceDue'] ?? $s['debtAmount'] ?? 0.0);
             $stmt->execute([
                 ':id'               => $s['id'],
+                ':invoiceNumber'    => trim((string)($s['invoiceNumber'] ?? '')) ?: ('INV-' . $s['id']), // never blank (column may be UNIQUE)
                 ':customerId'       => $s['customerId'] ?? null,
                 ':customerName'     => $s['customerName'],
                 ':customerPhone'    => $s['customerPhone'] ?? '',
+                ':customerWhatsapp' => $s['customerWhatsapp'] ?? '',
                 ':itemsJson'        => $s['itemsJson'],
                 ':totalAmount'      => (float)($s['totalAmount'] ?? 0.0),
                 ':amountPaid'       => (float)($s['amountPaid'] ?? 0.0),
-                ':debtAmount'       => (float)($s['balanceDue'] ?? $s['debtAmount'] ?? 0.0),
+                ':debtAmount'       => $due,
+                ':balanceDue'       => $due,
                 ':discountAmount'   => (float)($s['discountAmount'] ?? 0.0),
                 ':paymentStatus'    => $s['paymentStatus'] ?? 'PAID',
                 ':paymentMethod'    => $s['paymentMethod'] ?? 'CASH',
                 ':notes'            => $s['notes'] ?? '',
                 ':timestamp'        => $s['timestamp'] ?? round(microtime(true) * 1000),
+                ':smsSentCount'     => (int)($s['smsSentCount'] ?? 0),
                 ':lastSmsTimestamp' => $s['lastSmsTimestamp'] ?? null
             ]);
         }

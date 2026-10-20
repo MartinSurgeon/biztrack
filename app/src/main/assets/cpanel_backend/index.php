@@ -110,6 +110,36 @@ function saleStatus(array $s): array {
     return ['Unpaid', 'danger'];
 }
 
+/**
+ * Records created on the web get IDs from 10^15 upward. Phones use their own lower ranges
+ * (RecordIds.kt in the app), so sync - which matches records by ID - can never overwrite a
+ * phone's record with a web one or the other way round. Keep WEB_ID_BASE equal in both.
+ */
+const WEB_ID_BASE = 1000000000000000; // 1e15, below 2^53 so JavaScript keeps it exact
+
+$GLOBALS['bt_issued_ids'] = [];
+
+function bt_next_id(PDO $db, string $table): int {
+    if (!in_array($table, ['products', 'customers', 'sales_orders', 'payments', 'inventory_logs'], true)) {
+        throw new InvalidArgumentException("Unknown table $table");
+    }
+    $max = (int)$db->query("SELECT COALESCE(MAX(id), 0) FROM `$table` WHERE id >= " . WEB_ID_BASE)->fetchColumn();
+    $id = max($max, WEB_ID_BASE, $GLOBALS['bt_issued_ids'][$table] ?? 0) + 1;
+    $GLOBALS['bt_issued_ids'][$table] = $id;
+    return $id;
+}
+
+/** ID issued by the last bt_next_id() for $table (lastInsertId() is 0 for explicit IDs). */
+function bt_last_id(string $table): int {
+    return (int)($GLOBALS['bt_issued_ids'][$table] ?? 0);
+}
+
+/** Invoice number for display; older rows without one fall back to INV-<id>. */
+function invoiceNo(array $s): string {
+    $n = trim((string)($s['invoiceNumber'] ?? ''));
+    return $n !== '' ? $n : 'INV-' . (int)($s['id'] ?? 0);
+}
+
 function initials(string $name): string {
     $parts = preg_split('/\s+/', trim($name)) ?: [];
     $out = '';
@@ -621,6 +651,7 @@ if (!empty($DB_NAME) && !empty($DB_USER)) {
         $addColumnIfMissing($db, 'products', 'lastRestockedAt', "BIGINT NOT NULL DEFAULT 0");
         $addColumnIfMissing($db, 'products', 'description', "TEXT NULL");
         $addColumnIfMissing($db, 'products', 'imageUrl', "VARCHAR(512) NOT NULL DEFAULT ''");
+        $addColumnIfMissing($db, 'products', 'imageUri', "VARCHAR(512) NOT NULL DEFAULT ''"); // read when recording a sale
 
         // Guarantee sales order columns
         $addColumnIfMissing($db, 'sales_orders', 'balanceDue', "DECIMAL(12,2) NOT NULL DEFAULT 0.00");
@@ -629,6 +660,17 @@ if (!empty($DB_NAME) && !empty($DB_USER)) {
         $addColumnIfMissing($db, 'sales_orders', 'paymentStatus', "VARCHAR(32) NOT NULL DEFAULT 'PAID'");
         $addColumnIfMissing($db, 'sales_orders', 'paymentMethod', "VARCHAR(32) NOT NULL DEFAULT 'CASH'");
         $addColumnIfMissing($db, 'sales_orders', 'customerWhatsapp', "VARCHAR(64) NOT NULL DEFAULT ''");
+        // Tables created by older versions lack these; without them the dashboard logged
+        // "Undefined array key invoiceNumber" and recording a web sale crashed.
+        $addColumnIfMissing($db, 'sales_orders', 'invoiceNumber', "VARCHAR(100) NOT NULL DEFAULT ''");
+        $addColumnIfMissing($db, 'sales_orders', 'customerId', "BIGINT UNSIGNED NULL");
+        $addColumnIfMissing($db, 'sales_orders', 'customerName', "VARCHAR(255) NOT NULL DEFAULT ''");
+        $addColumnIfMissing($db, 'sales_orders', 'customerPhone', "VARCHAR(64) NOT NULL DEFAULT ''");
+        $addColumnIfMissing($db, 'sales_orders', 'itemsJson', "LONGTEXT NULL");
+        $addColumnIfMissing($db, 'sales_orders', 'totalAmount', "DECIMAL(12,2) NOT NULL DEFAULT 0.00");
+        $addColumnIfMissing($db, 'sales_orders', 'amountPaid', "DECIMAL(12,2) NOT NULL DEFAULT 0.00");
+        $addColumnIfMissing($db, 'sales_orders', 'notes', "TEXT NULL");
+        $addColumnIfMissing($db, 'sales_orders', 'timestamp', "BIGINT NOT NULL DEFAULT 0");
 
         // Auto-reconcile any legacy rows
         try {
@@ -636,6 +678,9 @@ if (!empty($DB_NAME) && !empty($DB_USER)) {
             $db->exec("UPDATE customers SET totalDebt = currentBalance WHERE (totalDebt IS NULL OR totalDebt = 0) AND currentBalance > 0");
             $db->exec("UPDATE products SET unitPrice = price WHERE (unitPrice IS NULL OR unitPrice = 0) AND price > 0");
             $db->exec("UPDATE products SET price = unitPrice WHERE (price IS NULL OR price = 0) AND unitPrice > 0");
+            $db->exec("UPDATE sales_orders SET invoiceNumber = CONCAT('INV-', id) WHERE invoiceNumber IS NULL OR invoiceNumber = ''");
+            $db->exec("UPDATE sales_orders SET balanceDue = debtAmount WHERE (balanceDue IS NULL OR balanceDue = 0) AND debtAmount > 0");
+            $db->exec("UPDATE customers SET totalPurchases = totalPurchased WHERE (totalPurchases IS NULL OR totalPurchases = 0) AND totalPurchased > 0");
         } catch (Exception $reconcileEx) {
             // Ignore
         }
@@ -951,13 +996,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if ($action === 'create_product') {
             $now = round(microtime(true) * 1000);
-            $stmt = $db->prepare("INSERT INTO products (name, category, price, unitPrice, costPrice, stockQuantity, unit, minStockThreshold, description, imageUrl, lastRestockedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-            $stmt->execute([$name, $category, $unitPrice, $unitPrice, $costPrice, $stockQuantity, $unit, $minThreshold, $description, $photoUrl ?? '', $now]);
-            $prodId = $db->lastInsertId();
+            $stmt = $db->prepare("INSERT INTO products (id, name, category, price, unitPrice, costPrice, stockQuantity, unit, minStockThreshold, description, imageUrl, lastRestockedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+            $stmt->execute([bt_next_id($db, 'products'), $name, $category, $unitPrice, $unitPrice, $costPrice, $stockQuantity, $unit, $minThreshold, $description, $photoUrl ?? '', $now]);
+            $prodId = bt_last_id('products');
 
             if ($stockQuantity > 0) {
-                $logStmt = $db->prepare("INSERT INTO inventory_logs (productId, productName, changeType, quantityChanged, quantityAfter, unit, notes, timestamp) VALUES (?, ?, 'RESTOCK', ?, ?, ?, 'Opening stock (web)', ?)");
-                $logStmt->execute([$prodId, $name, $stockQuantity, $stockQuantity, $unit, $now]);
+                $logStmt = $db->prepare("INSERT INTO inventory_logs (id, productId, productName, changeType, quantityChanged, quantityAfter, unit, notes, timestamp) VALUES (?, ?, ?, 'RESTOCK', ?, ?, ?, 'Opening stock (web)', ?)");
+                $logStmt->execute([bt_next_id($db, 'inventory_logs'), $prodId, $name, $stockQuantity, $stockQuantity, $unit, $now]);
             }
             $redirect('products', "Added \"$name\".");
         }
@@ -996,8 +1041,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             } else {
                 $db->prepare("UPDATE products SET stockQuantity = ? WHERE id = ?")->execute([$newQty, $id]);
             }
-            $db->prepare("INSERT INTO inventory_logs (productId, productName, changeType, quantityChanged, quantityAfter, unit, notes, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-               ->execute([$id, $prod['name'], $type, $change, $newQty, $prod['unit'], $notes, $now]);
+            $db->prepare("INSERT INTO inventory_logs (id, productId, productName, changeType, quantityChanged, quantityAfter, unit, notes, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+               ->execute([bt_next_id($db, 'inventory_logs'), $id, $prod['name'], $type, $change, $newQty, $prod['unit'], $notes, $now]);
 
             $verb = $direction > 0 ? 'Added' : 'Removed';
             $redirect('products', "$verb " . fmtQty($qty) . " {$prod['unit']} · {$prod['name']} now has " . fmtQty($newQty) . ".");
@@ -1026,8 +1071,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if ($name === '') $redirect('customers', 'Give the customer a name.', true);
         $now = round(microtime(true) * 1000);
-        $stmt = $db->prepare("INSERT INTO customers (name, phone, whatsapp, address, notes, totalDebt, currentBalance, totalPurchases, totalPaid, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-        $stmt->execute([$name, $phone, $whatsapp, $address, $notes, $initialDebt, $initialDebt, $initialDebt, 0.0, $now]);
+        $stmt = $db->prepare("INSERT INTO customers (id, name, phone, whatsapp, address, notes, totalDebt, currentBalance, totalPurchases, totalPaid, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+        $stmt->execute([bt_next_id($db, 'customers'), $name, $phone, $whatsapp, $address, $notes, $initialDebt, $initialDebt, $initialDebt, 0.0, $now]);
         $redirect('customers', "Added $name.");
     }
 
@@ -1113,8 +1158,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                         $newStock = max(0.0, (float)$pRow['stockQuantity'] - $qty);
                         $db->prepare("UPDATE products SET stockQuantity = ? WHERE id = ?")->execute([$newStock, $pId]);
-                        $db->prepare("INSERT INTO inventory_logs (productId, productName, changeType, quantityChanged, quantityAfter, unit, notes, timestamp) VALUES (?, ?, 'SALE', ?, ?, ?, 'Sold (web)', ?)")
-                           ->execute([$pId, $pRow['name'], -$qty, $newStock, $pRow['unit'], $now]);
+                        $db->prepare("INSERT INTO inventory_logs (id, productId, productName, changeType, quantityChanged, quantityAfter, unit, notes, timestamp) VALUES (?, ?, ?, 'SALE', ?, ?, ?, 'Sold (web)', ?)")
+                           ->execute([bt_next_id($db, 'inventory_logs'), $pId, $pRow['name'], -$qty, $newStock, $pRow['unit'], $now]);
                     }
                 }
             }
@@ -1131,9 +1176,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $invoiceNum = 'INV-' . date('ymd') . '-' . random_int(1000, 9999);
             $itemsJson = json_encode($cartItems);
 
-            $soStmt = $db->prepare("INSERT INTO sales_orders (invoiceNumber, customerId, customerName, customerPhone, customerWhatsapp, itemsJson, totalAmount, amountPaid, debtAmount, balanceDue, discountAmount, paymentStatus, paymentMethod, notes, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-            $soStmt->execute([$invoiceNum, ($customerId > 0 ? $customerId : null), $customerName, $customerPhone, $customerWhatsapp, $itemsJson, $netTotal, $amountPaid, $balanceDue, $balanceDue, $discountAmount, $paymentStatus, $paymentMethod, $notes, $now]);
-            $orderId = $db->lastInsertId();
+            $soStmt = $db->prepare("INSERT INTO sales_orders (id, invoiceNumber, customerId, customerName, customerPhone, customerWhatsapp, itemsJson, totalAmount, amountPaid, debtAmount, balanceDue, discountAmount, paymentStatus, paymentMethod, notes, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+            $soStmt->execute([bt_next_id($db, 'sales_orders'), $invoiceNum, ($customerId > 0 ? $customerId : null), $customerName, $customerPhone, $customerWhatsapp, $itemsJson, $netTotal, $amountPaid, $balanceDue, $balanceDue, $discountAmount, $paymentStatus, $paymentMethod, $notes, $now]);
+            $orderId = bt_last_id('sales_orders');
 
             if ($customerId > 0) {
                 $db->prepare("UPDATE customers SET totalPurchases = totalPurchases + ?, totalPaid = totalPaid + ?, totalDebt = totalDebt + ?, currentBalance = currentBalance + ?, lastTransactionDate = ? WHERE id = ?")
@@ -1144,8 +1189,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $cBalStmt->execute([$customerId]);
                     $balNow = (float)($cBalStmt->fetchColumn() ?: 0.0);
 
-                    $db->prepare("INSERT INTO payments (customerId, customerName, saleOrderId, amount, paymentMethod, notes, timestamp, balanceAfterPayment) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-                       ->execute([$customerId, $customerName, $orderId, $amountPaid, $paymentMethod, "Payment on #$invoiceNum", $now, $balNow]);
+                    $db->prepare("INSERT INTO payments (id, customerId, customerName, saleOrderId, amount, paymentMethod, notes, timestamp, balanceAfterPayment) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+                       ->execute([bt_next_id($db, 'payments'), $customerId, $customerName, $orderId, $amountPaid, $paymentMethod, "Payment on #$invoiceNum", $now, $balNow]);
                 }
             }
             $db->commit();
@@ -1182,8 +1227,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $db->prepare("UPDATE customers SET totalPaid = totalPaid + ?, totalDebt = ?, currentBalance = ?, lastTransactionDate = ? WHERE id = ?")
                    ->execute([$amount, $newBal, $newBal, $now, $customerId]);
 
-                $db->prepare("INSERT INTO payments (customerId, customerName, saleOrderId, amount, paymentMethod, notes, timestamp, balanceAfterPayment) VALUES (?, ?, NULL, ?, ?, ?, ?, ?)")
-                   ->execute([$customerId, $cust['name'], $amount, $method, $notes, $now, $newBal]);
+                $db->prepare("INSERT INTO payments (id, customerId, customerName, saleOrderId, amount, paymentMethod, notes, timestamp, balanceAfterPayment) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)")
+                   ->execute([bt_next_id($db, 'payments'), $customerId, $cust['name'], $amount, $method, $notes, $now, $newBal]);
 
                 // Apply the payment to the oldest unpaid invoices first.
                 $ordersStmt = $db->prepare("SELECT id, balanceDue, amountPaid FROM sales_orders WHERE customerId = ? AND balanceDue > 0 ORDER BY timestamp ASC");
@@ -1490,7 +1535,7 @@ if ($tab === 'dashboard'):
                                     <span class="avatar bg-tone-<?= avatarTone((string)$s['customerName']) ?>"><?= e(initials((string)$s['customerName'])) ?></span>
                                     <span class="min-w-0 flex-1">
                                         <span class="block font-semibold truncate"><?= e($s['customerName'] ?: 'Walk-in customer') ?></span>
-                                        <span class="block text-sm muted truncate">#<?= e($s['invoiceNumber']) ?> · <?= fmtDate($s['timestamp'], 'j M, H:i') ?></span>
+                                        <span class="block text-sm muted truncate">#<?= e(invoiceNo($s)) ?> · <?= fmtDate($s['timestamp'], 'j M, H:i') ?></span>
                                     </span>
                                     <span class="text-right">
                                         <span class="block font-semibold tnum"><?= money($s['totalAmount']) ?></span>
@@ -1907,7 +1952,7 @@ elseif ($tab === 'sales'):
                         $items = json_decode((string)$s['itemsJson'], true) ?: [];
                         $itemText = implode(' ', array_map(fn($i) => (string)($i['productName'] ?? ''), $items));
                         $order = [
-                            'id' => (int)$s['id'], 'invoice' => $s['invoiceNumber'], 'customer' => $s['customerName'], 'phone' => $s['customerPhone'],
+                            'id' => (int)$s['id'], 'invoice' => invoiceNo($s), 'customer' => $s['customerName'], 'phone' => $s['customerPhone'],
                             'date' => fmtDate($s['timestamp'], 'j M Y, H:i'), 'items' => array_map(fn($i) => [
                                 'name' => (string)($i['productName'] ?? 'Item'), 'qty' => (float)($i['quantity'] ?? 0),
                                 'unit' => (string)($i['unit'] ?? ''), 'price' => (float)($i['unitPrice'] ?? 0), 'total' => (float)($i['lineTotal'] ?? 0)], $items),
@@ -1917,8 +1962,8 @@ elseif ($tab === 'sales'):
                         ];
                     ?>
                         <tr class="clickable" tabindex="0" data-order='<?= jsonAttr($order) ?>' data-status="<?= $stLabel ?>" data-ts="<?= (int)$s['timestamp'] ?>"
-                            data-search="<?= e(strtolower($s['invoiceNumber'] . ' ' . $s['customerName'] . ' ' . $s['customerPhone'] . ' ' . $itemText)) ?>" <?= $openId === (int)$s['id'] ? 'data-autopen="1"' : '' ?>>
-                            <td class="font-semibold whitespace-nowrap opt">#<?= e($s['invoiceNumber']) ?></td>
+                            data-search="<?= e(strtolower(invoiceNo($s) . ' ' . $s['customerName'] . ' ' . $s['customerPhone'] . ' ' . $itemText)) ?>" <?= $openId === (int)$s['id'] ? 'data-autopen="1"' : '' ?>>
+                            <td class="font-semibold whitespace-nowrap opt">#<?= e(invoiceNo($s)) ?></td>
                             <td>
                                 <div class="flex items-center gap-3">
                                     <span class="avatar bg-tone-<?= avatarTone((string)$s['customerName']) ?>" style="width:34px;height:34px;font-size:12px"><?= e(initials((string)$s['customerName'])) ?></span>

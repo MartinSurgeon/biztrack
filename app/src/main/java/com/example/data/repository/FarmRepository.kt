@@ -24,7 +24,8 @@ class FarmRepository(
     val inStockProducts: Flow<List<ProductEntity>> = productDao.getInStockProducts()
     val lowStockProducts: Flow<List<ProductEntity>> = productDao.getLowStockProducts()
 
-    suspend fun insertProduct(product: ProductEntity): Long = productDao.insertProduct(product)
+    suspend fun insertProduct(product: ProductEntity): Long =
+        productDao.insertProduct(if (product.id == 0L) product.copy(id = RecordIds.next(RecordIds.PRODUCTS)) else product)
     suspend fun updateProduct(product: ProductEntity) = productDao.updateProduct(product)
     suspend fun deleteProduct(product: ProductEntity) = productDao.deleteProduct(product)
     suspend fun adjustProductStock(productId: Long, quantityChange: Double, logType: String = "ADJUSTMENT", notes: String = "") {
@@ -33,6 +34,7 @@ class FarmRepository(
         if (product != null && inventoryLogDao != null) {
             inventoryLogDao.insertLog(
                 InventoryLogEntity(
+                    id = RecordIds.next(RecordIds.INVENTORY_LOGS),
                     productId = productId,
                     productName = product.name,
                     changeType = logType,
@@ -54,7 +56,8 @@ class FarmRepository(
     val totalOutstandingDebt: Flow<Double?> = customerDao.getTotalOutstandingDebt()
 
     suspend fun getCustomerById(id: Long): CustomerEntity? = customerDao.getCustomerById(id)
-    suspend fun insertCustomer(customer: CustomerEntity): Long = customerDao.insertCustomer(customer)
+    suspend fun insertCustomer(customer: CustomerEntity): Long =
+        customerDao.insertCustomer(if (customer.id == 0L) customer.copy(id = RecordIds.next(RecordIds.CUSTOMERS)) else customer)
     suspend fun updateCustomer(customer: CustomerEntity) = customerDao.updateCustomer(customer)
     suspend fun deleteCustomer(customer: CustomerEntity) = customerDao.deleteCustomer(customer)
 
@@ -151,6 +154,7 @@ class FarmRepository(
                 effectiveCustomerId = existing.id
             } else {
                 val newCust = CustomerEntity(
+                    id = RecordIds.next(RecordIds.CUSTOMERS),
                     name = customerName,
                     phone = customerPhone,
                     whatsapp = if (customerWhatsapp.isNotBlank()) customerWhatsapp else customerPhone,
@@ -164,6 +168,7 @@ class FarmRepository(
         }
 
         val order = SaleOrderEntity(
+            id = RecordIds.next(RecordIds.SALES),
             invoiceNumber = invoiceNo,
             customerId = effectiveCustomerId,
             customerName = customerName,
@@ -197,6 +202,7 @@ class FarmRepository(
             val currentCust = customerDao.getCustomerById(effectiveCustomerId)
             paymentDao.insertPayment(
                 PaymentEntity(
+                    id = RecordIds.next(RecordIds.PAYMENTS),
                     customerId = effectiveCustomerId,
                     customerName = customerName,
                     saleOrderId = orderId,
@@ -346,6 +352,7 @@ class FarmRepository(
         // Log payment in ledger
         paymentDao.insertPayment(
             PaymentEntity(
+                id = RecordIds.next(RecordIds.PAYMENTS),
                 customerId = customerId,
                 customerName = customer.name,
                 saleOrderId = lastAllocatedOrderId,
@@ -404,6 +411,7 @@ class FarmRepository(
 
         paymentDao.insertPayment(
             PaymentEntity(
+                id = RecordIds.next(RecordIds.PAYMENTS),
                 customerId = order.customerId,
                 customerName = order.customerName,
                 saleOrderId = order.id,
