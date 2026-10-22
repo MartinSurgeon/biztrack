@@ -45,7 +45,8 @@ class FarmViewModel(application: Application) : AndroidViewModel(application) {
         saleOrderDao = db.saleOrderDao(),
         paymentDao = db.paymentDao(),
         appSettingsDao = db.appSettingsDao(),
-        inventoryLogDao = db.inventoryLogDao()
+        inventoryLogDao = db.inventoryLogDao(),
+        deletedRecordDao = db.deletedRecordDao()
     )
 
     // Backup & Restore State Flows
@@ -760,7 +761,8 @@ class FarmViewModel(application: Application) : AndroidViewModel(application) {
     // Settings
     fun saveSettings(newSettings: AppSettingsEntity) {
         viewModelScope.launch {
-            repository.saveSettings(newSettings)
+            // Stamped only for user edits, so sync knows which side changed settings last.
+            repository.saveSettings(newSettings.copy(updatedAt = System.currentTimeMillis()))
             _statusMessage.emit("Settings saved successfully!")
             FarmWidgetProvider.updateAllWidgets(getApplication())
         }
@@ -955,6 +957,30 @@ class FarmViewModel(application: Application) : AndroidViewModel(application) {
                 // 0. Upload new product photos first so the data push carries their web addresses.
                 _cloudSyncStatusMessage.value = "Uploading product photos..."
                 val photosFailed = uploadPendingProductPhotos(syncUrl, secretKey)
+
+                // 0b. Two-way sync: bring in changes made on the web first (newest edit wins,
+                //     deletions and stock changes are merged), then upload everything below.
+                _cloudSyncStatusMessage.value = "Fetching changes made on the web..."
+                val pulled = CloudSyncService.pullFromCloud(syncUrl = syncUrl, secretKey = secretKey)
+                if (!pulled.success) {
+                    val fail = CloudSyncResult(success = false, message = pulled.message)
+                    _isCloudSyncing.value = false
+                    _cloudSyncStatusMessage.value = fail.message
+                    _statusMessage.emit(fail.message)
+                    onResult(fail)
+                    return@launch
+                }
+                pulled.backupData?.let { incoming ->
+                    val merged = DatabaseBackupHelper.restoreDatabase(db, incoming)
+                    if (!merged.success) {
+                        val fail = CloudSyncResult(success = false, message = merged.message)
+                        _isCloudSyncing.value = false
+                        _cloudSyncStatusMessage.value = fail.message
+                        _statusMessage.emit(fail.message)
+                        onResult(fail)
+                        return@launch
+                    }
+                }
 
                 // 1. Gather all current Room records
                 val backupData = DatabaseBackupHelper.createBackupData(db)

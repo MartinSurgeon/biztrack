@@ -8,7 +8,8 @@ This web interface allows you to manage your business inventory, sales, customer
 
 1. **`index.php`** — The complete Web Management Dashboard (POS, Products CRUD, Debtors Ledger, Payments, and Settings).
 2. **`sync.php`** — The backend sync endpoint that your Android mobile app communicates with.
-3. **`schema.sql`** — The MySQL database schema table definitions.
+3. **`biztrack_core.php`** — Shared code used by both files above (database upgrades, two-way sync, photos). Both stop with a clear message if it is missing.
+4. **`schema.sql`** — The MySQL database schema table definitions.
 
 ---
 
@@ -16,7 +17,7 @@ This web interface allows you to manage your business inventory, sales, customer
 
 1. **Upload Files to cPanel**:
    - In cPanel **File Manager**, open `public_html/` (or a subdirectory like `public_html/biztrack/` or `public_html/api/`).
-   - Upload `index.php`, `sync.php`, and import `schema.sql` into your phpMyAdmin database.
+   - Upload `index.php`, `sync.php` and `biztrack_core.php` to the same folder, and import `schema.sql` into your phpMyAdmin database.
 
 2. **Create `config.php`** next to `sync.php` (never commit it):
    ```php
@@ -41,9 +42,9 @@ This web interface allows you to manage your business inventory, sales, customer
 
 Works for any kind of business (shop, salon, restaurant, repairs, farm…), in light or dark mode, on desktop and phone.
 
-- **Dashboard**: Today's and this month's sales (with change vs. the same days last month), money collected, money owed, a 14-day sales chart, best sellers, who owes you, and what's running low.
+- **Dashboard**: Total sales (all time), today's and this month's sales (with change vs. the same days last month), money collected, money owed, a 14-day sales chart with a 7-day average line (hover or tap a day for its figures), best sellers, who owes you, and what's running low. The figure cards rearrange to fit any screen, from a small phone to a wide monitor.
 - **New sale (POS)**: Tap products to add them (search and category filters), adjust quantities and prices, pick or type a customer, apply a discount, choose full / deposit / credit payment and a method. Stock is deducted automatically and a receipt opens when you're done.
-- **Sales**: Search and filter by date or payment status, see running totals, and open any invoice as a printable receipt or share it on WhatsApp.
+- **Sales**: Search and filter by date or payment status, see running totals, and open any invoice as a printable receipt or share it on WhatsApp. From the receipt you can **edit the sale** (items, quantities, prices, discount, amount paid, method, notes) or **delete it**. Stock and the customer's balance are corrected automatically, and the change reaches every phone on its next sync.
 - **Products**: Goods or services in any category, selling and cost price (margin shown automatically), add or remove stock, and low-stock alerts.
 - **Customers**: Everyone you sell to, who owes what, one-click "Collect" payments, and WhatsApp payment reminders pre-filled with the balance.
 - **Payments** and **Stock history**: A searchable record of every payment received and every stock change.
@@ -53,11 +54,16 @@ Keyboard shortcuts: `N` new sale · `/` search · `Esc` close dialogs.
 
 ---
 
-## 🔄 How it Syncs with Mobile in Real Time
+## 🔄 How it Syncs with Mobile (two-way)
 
-1. When you add/update/delete products, sales, or debts on your laptop, `index.php` writes directly into the MySQL database.
-2. On your Android app, whenever auto-sync triggers or you tap **"Restore / Pull from Cloud"**, the mobile app immediately downloads the updated state from MySQL.
-3. Neither your mobile code nor your database schema needs to change!
+When the app syncs, it first downloads what changed on the web and merges it, then uploads its own changes. Changes made on the web and on any number of phones are combined, not overwritten:
+
+1. **The latest edit wins.** Every product, customer, sale, payment and the business details remember when they were last changed. An older copy never replaces a newer one.
+2. **Stock adds up.** Stock is never copied as a number. Each sale, restock or correction is a stock-history entry, and each entry is counted once everywhere. A sale on a phone and a restock on the web both count.
+3. **Balances add up.** What a customer owes = what they owed before BizTrack + their unpaid sales. It is recalculated after every change, so payments and edits made in different places all count.
+4. **Deletions stick.** A sale, product, customer or payment deleted in one place is deleted everywhere, instead of being sent back by a device that still had it.
+
+All devices should run the latest app version. Older app versions can still sync, but their changes are treated as "no edit time" and lose to newer edits.
 
 ---
 
@@ -71,4 +77,4 @@ Photos added in the app or on the web dashboard are shared between them:
 - Accepted: JPEG, PNG or WebP up to 6 MB. With PHP's GD extension (enabled on most hosts) photos are resized to 1024px and saved as JPEG.
 - The folder gets its own `.htaccess` that disables directory listings and blocks scripts.
 
-**Upgrading?** Upload the new `index.php` **and** `sync.php` together. The new `imageUrl` column is added to your database automatically on first use.
+**Upgrading?** Upload the new `index.php`, `sync.php` **and** `biztrack_core.php` together, then update the app on every phone. New columns and tables are added to your database automatically the first time either page is opened. Existing balances are kept exactly as they are. Back up your database in phpMyAdmin first, as with any upgrade.

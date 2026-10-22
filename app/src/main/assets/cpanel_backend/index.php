@@ -41,6 +41,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
     exit('Invalid or expired form token. Go back, reload the page and try again.');
 }
 
+// Shared schema, sync and photo code (same file sync.php uses).
+if (!file_exists(__DIR__ . '/biztrack_core.php')) {
+    http_response_code(500);
+    exit('Server incomplete: upload biztrack_core.php next to index.php.');
+}
+require_once __DIR__ . '/biztrack_core.php';
+
 // ----------------------------------------------------
 // 0. SHARED VOCABULARY (kept in sync with the Android app)
 // ----------------------------------------------------
@@ -73,6 +80,12 @@ function e($v): string { return htmlspecialchars((string)$v, ENT_QUOTES, 'UTF-8'
 function money($amount): string {
     global $currency;
     return e($currency) . ' ' . number_format((float)$amount, 2);
+}
+
+/** Money for KPI cards: a smaller currency symbol that may wrap above the number on narrow cards. */
+function kpiMoney($amount): string {
+    global $currency;
+    return '<span class="kpi-cur">' . e($currency) . '</span> <span class="kpi-num">' . number_format((float)$amount, 2) . '</span>';
 }
 
 function fmtDate($ms, string $format = 'd M Y, H:i'): string {
@@ -108,30 +121,6 @@ function saleStatus(array $s): array {
     if ($balance <= 0.009 || $status === 'PAID') return ['Paid', 'success'];
     if ($status === 'PARTIAL' || (float)($s['amountPaid'] ?? 0) > 0.009) return ['Partial', 'warning'];
     return ['Unpaid', 'danger'];
-}
-
-/**
- * Records created on the web get IDs from 10^15 upward. Phones use their own lower ranges
- * (RecordIds.kt in the app), so sync - which matches records by ID - can never overwrite a
- * phone's record with a web one or the other way round. Keep WEB_ID_BASE equal in both.
- */
-const WEB_ID_BASE = 1000000000000000; // 1e15, below 2^53 so JavaScript keeps it exact
-
-$GLOBALS['bt_issued_ids'] = [];
-
-function bt_next_id(PDO $db, string $table): int {
-    if (!in_array($table, ['products', 'customers', 'sales_orders', 'payments', 'inventory_logs'], true)) {
-        throw new InvalidArgumentException("Unknown table $table");
-    }
-    $max = (int)$db->query("SELECT COALESCE(MAX(id), 0) FROM `$table` WHERE id >= " . WEB_ID_BASE)->fetchColumn();
-    $id = max($max, WEB_ID_BASE, $GLOBALS['bt_issued_ids'][$table] ?? 0) + 1;
-    $GLOBALS['bt_issued_ids'][$table] = $id;
-    return $id;
-}
-
-/** ID issued by the last bt_next_id() for $table (lastInsertId() is 0 for explicit IDs). */
-function bt_last_id(string $table): int {
-    return (int)($GLOBALS['bt_issued_ids'][$table] ?? 0);
 }
 
 /** Invoice number for display; older rows without one fall back to INV-<id>. */
@@ -189,6 +178,7 @@ function icon(string $name, string $class = 'ic'): string {
         'settings' => '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
         'logout' => '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>',
         'search' => '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+        'chart' => '<path d="M3 3v18h18"/><path d="M8 17V11M13 17V7M18 17v-4"/>',
         'trend' => '<path d="m22 7-8.5 8.5-5-5L2 17"/><path d="M16 7h6v6"/>',
         'trendDown' => '<path d="m22 17-8.5-8.5-5 5L2 7"/><path d="M16 17h6v-6"/>',
         'check' => '<path d="M20 6 9 17l-5-5"/>',
@@ -247,7 +237,7 @@ function renderHead(string $title): void { ?>
     --warning: #b45309; --warning-soft: #fef3c7; --on-warning-soft: #78350f;
     --danger: #dc2626; --danger-hover: #b91c1c; --danger-soft: #fee2e2; --on-danger-soft: #7f1d1d;
     --info: #1d4ed8; --info-soft: #dbeafe; --on-info-soft: #1e3a8a;
-    --ring: rgba(79, 70, 229, .35); --bar: #818cf8;
+    --ring: rgba(79, 70, 229, .35); --chart-bar: #6366f1; --chart-line: #eb6834;
     --shadow: 0 1px 2px rgba(0,0,0,.04), 0 4px 16px rgba(0,0,0,.05);
     --shadow-lg: 0 10px 40px rgba(0,0,0,.14);
   }
@@ -260,7 +250,7 @@ function renderHead(string $title): void { ?>
     --warning: #fbbf24; --warning-soft: #3a2306; --on-warning-soft: #fde68a;
     --danger: #f87171; --danger-hover: #fca5a5; --danger-soft: #3b1212; --on-danger-soft: #fecaca;
     --info: #60a5fa; --info-soft: #172554; --on-info-soft: #bfdbfe;
-    --ring: rgba(129, 140, 248, .45); --bar: #6366f1;
+    --ring: rgba(129, 140, 248, .45); --chart-bar: #6366f1; --chart-line: #d95926;
     --shadow: 0 0 0 1px var(--border);
     --shadow-lg: 0 0 0 1px var(--border-strong), 0 20px 50px rgba(0,0,0,.6);
   }
@@ -401,18 +391,53 @@ function renderHead(string $title): void { ?>
   .modal-panel { background: var(--surface); width: 100%; max-height: 92vh; overflow-y: auto; border-radius: 24px 24px 0 0; box-shadow: var(--shadow-lg); animation: rise .2s cubic-bezier(.2,.9,.3,1.1); }
   @media (min-width: 640px) { .modal { align-items: center; padding: 24px; } .modal-panel { border-radius: 24px; max-width: 520px; } }
   .modal-panel.wide { max-width: 640px; }
+  .es-item { grid-template-columns: minmax(0, 1fr) 84px 108px 40px; }
+  @media (max-width: 479px) { .es-item { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 40px; } .es-item > div:first-child { grid-column: 1 / -1; } }
+  .es-item .input { height: 40px; border-radius: 12px; padding: 0 10px; }
   @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
   @keyframes rise { from { transform: translateY(24px); opacity: .6; } to { transform: none; opacity: 1; } }
   .toast { position: fixed; top: 20px; right: 20px; left: 20px; z-index: 80; display: flex; justify-content: flex-end; pointer-events: none; }
   .toast > div { pointer-events: auto; max-width: 420px; animation: rise .25s ease-out; }
 
   /* ---------- Chart ---------- */
-  .bars { display: flex; align-items: flex-end; gap: 6px; height: 160px; }
-  .bar { width: 100%; border-radius: 8px 8px 4px 4px; background: var(--bar); min-height: 4px; position: relative; transition: background .15s; }
-  .bar.today { background: var(--primary); }
-  .bar:hover { background: var(--primary); }
-  .kpi { font-size: clamp(18px, calc(1.9vw + 8px), 30px); line-height: 1.15; font-weight: 800; letter-spacing: -.02em; white-space: nowrap; font-variant-numeric: tabular-nums; margin-top: 12px; }
-  .bar-wrap { flex: 1; display: flex; flex-direction: column; align-items: stretch; justify-content: flex-end; height: 100%; }
+  /* Bars and the average line share one scale; each bar slot is exactly 1/14 wide so the
+     line's points (at slot centres) sit on the bars. Colours pass the CVD/contrast checks
+     against both card surfaces. */
+  .chart { position: relative; height: 180px; }
+  .bars { display: flex; align-items: flex-end; height: 100%; }
+  .bar-wrap { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; height: 100%; padding: 0 3px; cursor: default; }
+  @media (min-width: 640px) { .bar-wrap { padding: 0 4px; } }
+  .bar { width: 100%; border-radius: 4px 4px 0 0; background: var(--chart-bar); min-height: 3px; transition: opacity .15s; }
+  .chart:has(.bar-wrap.active) .bar-wrap:not(.active) .bar { opacity: .45; }
+  .avg-line { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+  .avg-line polyline { fill: none; stroke-linejoin: round; stroke-linecap: round; }
+  .avg-line .halo { stroke: var(--surface); stroke-width: 6px; }
+  .avg-line .stroke { stroke: var(--chart-line); stroke-width: 2px; }
+  .avg-dot { position: absolute; width: 10px; height: 10px; margin: 0 0 -5px -5px; border-radius: 999px; background: var(--chart-line); box-shadow: 0 0 0 2px var(--surface); pointer-events: none; }
+  .chart-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 13px; color: var(--muted); }
+  .chart-legend li { display: flex; align-items: center; gap: 8px; }
+  .swatch-bar { width: 10px; height: 12px; border-radius: 3px 3px 0 0; background: var(--chart-bar); flex-shrink: 0; }
+  .swatch-line { width: 16px; height: 2px; border-radius: 2px; background: var(--chart-line); flex-shrink: 0; }
+  .chart-tip { position: absolute; top: -8px; z-index: 5; min-width: 168px; padding: 10px 12px; border-radius: 12px; background: var(--surface); color: var(--text);
+               box-shadow: var(--shadow-lg); font-size: 13px; pointer-events: none; transform: translateY(-100%); }
+  .chart-tip .tip-day { font-weight: 600; margin-bottom: 6px; }
+  .chart-tip .tip-row { display: flex; align-items: center; gap: 8px; color: var(--muted); }
+  .chart-tip .tip-row b { margin-left: auto; color: var(--text); font-variant-numeric: tabular-nums; padding-left: 12px; }
+
+  /* ---------- KPI cards: column count follows the space available, not the screen ---------- */
+  .kpi-wrap { container-type: inline-size; }
+  .kpi-grid { display: grid; gap: 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .kpi-grid > .kpi-hero { grid-column: 1 / -1; }
+  @container (max-width: 479px) { .kpi-grid > .card { padding: 16px; } }
+  @container (min-width: 640px) { .kpi-grid { gap: 16px; grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+  @container (min-width: 1040px) { .kpi-grid { gap: 20px; grid-template-columns: repeat(5, minmax(0, 1fr)); } .kpi-grid > .kpi-hero { grid-column: auto; } }
+  .kpi-card { container-type: inline-size; min-width: 0; }
+  .kpi { font-size: 26px; line-height: 1.15; font-weight: 800; letter-spacing: -.02em; font-variant-numeric: tabular-nums; margin-top: 12px; overflow-wrap: anywhere; }
+  .kpi-card .kpi { font-size: clamp(17px, 12.5cqi, 30px); }
+  .kpi-cur { font-size: .6em; font-weight: 700; letter-spacing: 0; color: var(--muted); white-space: nowrap; }
+  .kpi.text-danger .kpi-cur { color: inherit; }
+  .kpi-num { white-space: nowrap; }
+  .kpi-icon { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 10px; flex-shrink: 0; }
 
   /* ---------- POS ---------- */
   .product-tile { text-align: left; padding: 14px; border-radius: 18px; background: var(--surface); box-shadow: var(--shadow); transition: transform .08s, box-shadow .15s; position: relative; }
@@ -527,250 +552,18 @@ if (!empty($DB_NAME) && !empty($DB_USER)) {
             PDO::ATTR_EMULATE_PREPARES   => false,
         ]);
 
-        // Auto-verify and create essential schema tables if missing
-        $db->exec("
-            CREATE TABLE IF NOT EXISTS products (
-                id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-                name VARCHAR(255) NOT NULL,
-                category VARCHAR(100) DEFAULT 'GENERAL',
-                price DECIMAL(12,2) DEFAULT 0.00,
-                unitPrice DECIMAL(12,2) DEFAULT 0.00,
-                costPrice DECIMAL(12,2) DEFAULT 0.00,
-                stockQuantity DECIMAL(12,2) DEFAULT 0.00,
-                unit VARCHAR(50) DEFAULT 'Piece',
-                minStockThreshold DECIMAL(12,2) DEFAULT 5.00,
-                description TEXT NULL,
-                imageUri VARCHAR(512) DEFAULT '',
-                imageUrl VARCHAR(512) NOT NULL DEFAULT '',
-                lastRestockedAt BIGINT DEFAULT 0
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-            CREATE TABLE IF NOT EXISTS customers (
-                id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-                name VARCHAR(255) NOT NULL,
-                phone VARCHAR(64) DEFAULT '',
-                whatsapp VARCHAR(64) DEFAULT '',
-                address VARCHAR(255) DEFAULT '',
-                notes TEXT NULL,
-                totalDebt DECIMAL(12,2) DEFAULT 0.00,
-                currentBalance DECIMAL(12,2) DEFAULT 0.00,
-                totalPurchases DECIMAL(12,2) DEFAULT 0.00,
-                totalPurchased DECIMAL(12,2) DEFAULT 0.00,
-                totalPaid DECIMAL(12,2) DEFAULT 0.00,
-                createdAt BIGINT DEFAULT 0,
-                lastTransactionDate BIGINT DEFAULT 0
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-            CREATE TABLE IF NOT EXISTS sales_orders (
-                id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-                invoiceNumber VARCHAR(100) NOT NULL UNIQUE,
-                customerId BIGINT UNSIGNED NULL,
-                customerName VARCHAR(255) NOT NULL,
-                customerPhone VARCHAR(64) DEFAULT '',
-                customerWhatsapp VARCHAR(64) DEFAULT '',
-                itemsJson LONGTEXT NULL,
-                totalAmount DECIMAL(12,2) DEFAULT 0.00,
-                amountPaid DECIMAL(12,2) DEFAULT 0.00,
-                debtAmount DECIMAL(12,2) DEFAULT 0.00,
-                balanceDue DECIMAL(12,2) DEFAULT 0.00,
-                discountAmount DECIMAL(12,2) DEFAULT 0.00,
-                paymentStatus VARCHAR(50) DEFAULT 'PAID',
-                paymentMethod VARCHAR(50) DEFAULT 'CASH',
-                notes TEXT NULL,
-                timestamp BIGINT NOT NULL DEFAULT 0,
-                smsSentCount INT DEFAULT 0,
-                lastSmsTimestamp BIGINT NULL
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-            CREATE TABLE IF NOT EXISTS payments (
-                id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-                customerId BIGINT UNSIGNED NOT NULL,
-                customerName VARCHAR(255) NOT NULL,
-                saleOrderId BIGINT UNSIGNED NULL,
-                amount DECIMAL(12,2) DEFAULT 0.00,
-                paymentMethod VARCHAR(50) DEFAULT 'CASH',
-                notes TEXT NULL,
-                timestamp BIGINT NOT NULL DEFAULT 0,
-                balanceAfterPayment DECIMAL(12,2) DEFAULT 0.00
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-            CREATE TABLE IF NOT EXISTS inventory_logs (
-                id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-                productId BIGINT UNSIGNED NOT NULL,
-                productName VARCHAR(255) NOT NULL,
-                changeType VARCHAR(50) NOT NULL,
-                quantityChanged DECIMAL(12,2) NOT NULL DEFAULT 0.00,
-                quantityAfter DECIMAL(12,2) NOT NULL DEFAULT 0.00,
-                unit VARCHAR(50) DEFAULT 'Piece',
-                notes TEXT NULL,
-                timestamp BIGINT NOT NULL DEFAULT 0
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-            CREATE TABLE IF NOT EXISTS app_settings (
-                id INT PRIMARY KEY DEFAULT 1,
-                businessName VARCHAR(255) DEFAULT 'My Business',
-                businessTagline VARCHAR(255) DEFAULT 'Quality products & reliable service',
-                businessPhone VARCHAR(64) DEFAULT '',
-                businessLocation VARCHAR(255) DEFAULT '',
-                momoPaymentDetails VARCHAR(255) DEFAULT '',
-                currencySymbol VARCHAR(20) DEFAULT 'GH₵'
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-        ");
-
-        // Helper to dynamically add any missing columns to pre-existing tables
-        $addColumnIfMissing = function($pdo, $table, $column, $def) {
-            try {
-                $check = $pdo->query("SHOW COLUMNS FROM `{$table}` LIKE '{$column}'");
-                if ($check && $check->rowCount() === 0) {
-                    $pdo->exec("ALTER TABLE `{$table}` ADD COLUMN `{$column}` {$def}");
-                }
-            } catch (Exception $ex) {
-                // Silently continue if column already exists
-            }
-        };
-
-        // Guarantee customer columns exist even on legacy tables
-        $addColumnIfMissing($db, 'customers', 'currentBalance', "DECIMAL(12,2) NOT NULL DEFAULT 0.00");
-        $addColumnIfMissing($db, 'customers', 'totalDebt', "DECIMAL(12,2) NOT NULL DEFAULT 0.00");
-        $addColumnIfMissing($db, 'customers', 'totalPurchases', "DECIMAL(12,2) NOT NULL DEFAULT 0.00");
-        $addColumnIfMissing($db, 'customers', 'totalPurchased', "DECIMAL(12,2) NOT NULL DEFAULT 0.00");
-        $addColumnIfMissing($db, 'customers', 'totalPaid', "DECIMAL(12,2) NOT NULL DEFAULT 0.00");
-        $addColumnIfMissing($db, 'customers', 'whatsapp', "VARCHAR(64) NOT NULL DEFAULT ''");
-        $addColumnIfMissing($db, 'customers', 'phone', "VARCHAR(64) NOT NULL DEFAULT ''");
-        $addColumnIfMissing($db, 'customers', 'address', "VARCHAR(255) NOT NULL DEFAULT ''");
-        $addColumnIfMissing($db, 'customers', 'notes', "TEXT NULL");
-        $addColumnIfMissing($db, 'customers', 'lastTransactionDate', "BIGINT NOT NULL DEFAULT 0");
-        $addColumnIfMissing($db, 'customers', 'createdAt', "BIGINT NOT NULL DEFAULT 0");
-
-        // Guarantee product columns
-        $addColumnIfMissing($db, 'products', 'unitPrice', "DECIMAL(12,2) NOT NULL DEFAULT 0.00");
-        $addColumnIfMissing($db, 'products', 'price', "DECIMAL(12,2) NOT NULL DEFAULT 0.00");
-        $addColumnIfMissing($db, 'products', 'costPrice', "DECIMAL(12,2) NOT NULL DEFAULT 0.00");
-        $addColumnIfMissing($db, 'products', 'minStockThreshold', "DECIMAL(12,2) NOT NULL DEFAULT 5.00");
-        $addColumnIfMissing($db, 'products', 'unit', "VARCHAR(32) NOT NULL DEFAULT 'Piece'");
-        $addColumnIfMissing($db, 'products', 'lastRestockedAt', "BIGINT NOT NULL DEFAULT 0");
-        $addColumnIfMissing($db, 'products', 'description', "TEXT NULL");
-        $addColumnIfMissing($db, 'products', 'imageUrl', "VARCHAR(512) NOT NULL DEFAULT ''");
-        $addColumnIfMissing($db, 'products', 'imageUri', "VARCHAR(512) NOT NULL DEFAULT ''"); // read when recording a sale
-
-        // Guarantee sales order columns
-        $addColumnIfMissing($db, 'sales_orders', 'balanceDue', "DECIMAL(12,2) NOT NULL DEFAULT 0.00");
-        $addColumnIfMissing($db, 'sales_orders', 'debtAmount', "DECIMAL(12,2) NOT NULL DEFAULT 0.00");
-        $addColumnIfMissing($db, 'sales_orders', 'discountAmount', "DECIMAL(12,2) NOT NULL DEFAULT 0.00");
-        $addColumnIfMissing($db, 'sales_orders', 'paymentStatus', "VARCHAR(32) NOT NULL DEFAULT 'PAID'");
-        $addColumnIfMissing($db, 'sales_orders', 'paymentMethod', "VARCHAR(32) NOT NULL DEFAULT 'CASH'");
-        $addColumnIfMissing($db, 'sales_orders', 'customerWhatsapp', "VARCHAR(64) NOT NULL DEFAULT ''");
-        // Tables created by older versions lack these; without them the dashboard logged
-        // "Undefined array key invoiceNumber" and recording a web sale crashed.
-        $addColumnIfMissing($db, 'sales_orders', 'invoiceNumber', "VARCHAR(100) NOT NULL DEFAULT ''");
-        $addColumnIfMissing($db, 'sales_orders', 'customerId', "BIGINT UNSIGNED NULL");
-        $addColumnIfMissing($db, 'sales_orders', 'customerName', "VARCHAR(255) NOT NULL DEFAULT ''");
-        $addColumnIfMissing($db, 'sales_orders', 'customerPhone', "VARCHAR(64) NOT NULL DEFAULT ''");
-        $addColumnIfMissing($db, 'sales_orders', 'itemsJson', "LONGTEXT NULL");
-        $addColumnIfMissing($db, 'sales_orders', 'totalAmount', "DECIMAL(12,2) NOT NULL DEFAULT 0.00");
-        $addColumnIfMissing($db, 'sales_orders', 'amountPaid', "DECIMAL(12,2) NOT NULL DEFAULT 0.00");
-        $addColumnIfMissing($db, 'sales_orders', 'notes', "TEXT NULL");
-        $addColumnIfMissing($db, 'sales_orders', 'timestamp', "BIGINT NOT NULL DEFAULT 0");
-
-        // Auto-reconcile any legacy rows
-        try {
-            $db->exec("UPDATE customers SET currentBalance = totalDebt WHERE (currentBalance IS NULL OR currentBalance = 0) AND totalDebt > 0");
-            $db->exec("UPDATE customers SET totalDebt = currentBalance WHERE (totalDebt IS NULL OR totalDebt = 0) AND currentBalance > 0");
-            $db->exec("UPDATE products SET unitPrice = price WHERE (unitPrice IS NULL OR unitPrice = 0) AND price > 0");
-            $db->exec("UPDATE products SET price = unitPrice WHERE (price IS NULL OR price = 0) AND unitPrice > 0");
-            $db->exec("UPDATE sales_orders SET invoiceNumber = CONCAT('INV-', id) WHERE invoiceNumber IS NULL OR invoiceNumber = ''");
-            $db->exec("UPDATE sales_orders SET balanceDue = debtAmount WHERE (balanceDue IS NULL OR balanceDue = 0) AND debtAmount > 0");
-            $db->exec("UPDATE customers SET totalPurchases = totalPurchased WHERE (totalPurchases IS NULL OR totalPurchases = 0) AND totalPurchased > 0");
-        } catch (Exception $reconcileEx) {
-            // Ignore
-        }
+        // Tables, columns and one-time upgrades live in biztrack_core.php (shared with sync.php).
+        bt_ensure_schema($db);
 
     } catch (PDOException $e) {
         error_log("BizTrack dashboard DB error: " . $e->getMessage());
+        $db = null;
         $dbError = "Could not connect to the database. Check the host, name, user and password.";
     }
 } else {
     $dbError = null; // first run: nothing configured yet, not an error
 }
 
-
-// ----------------------------------------------------
-// PRODUCT PHOTOS (shared by sync.php and index.php; keep both copies in sync)
-// Photos live in ./uploads/products/ next to this file, named by content hash.
-// ----------------------------------------------------
-if (!function_exists('bt_store_product_image')) {
-    function bt_uploads_dir(): string {
-        $dir = __DIR__ . '/uploads/products';
-        if (!is_dir($dir)) @mkdir($dir, 0755, true);
-        // Never serve listings or run scripts from the uploads folder. (php_flag is avoided on
-        // purpose: it breaks the folder with a 500 error on PHP-FPM hosts.)
-        $ht = __DIR__ . '/uploads/.htaccess';
-        if (!file_exists($ht)) {
-            @file_put_contents($ht, "Options -Indexes\nRemoveHandler .php .phtml .php3 .php4 .php5 .php7 .php8 .phar\n"
-                . "<FilesMatch \"\\.(php[0-9]?|phtml|phar|pl|py|cgi|sh)$\">\n"
-                . "  <IfModule mod_authz_core.c>\n    Require all denied\n  </IfModule>\n"
-                . "  <IfModule !mod_authz_core.c>\n    Deny from all\n  </IfModule>\n</FilesMatch>\n");
-        }
-        if (!file_exists(__DIR__ . '/uploads/index.html')) @file_put_contents(__DIR__ . '/uploads/index.html', '');
-        if (!file_exists($dir . '/index.html')) @file_put_contents($dir . '/index.html', '');
-        return $dir;
-    }
-
-    /** Public URL of the uploads folder, e.g. https://example.com/biztrack/uploads/products */
-    function bt_uploads_base_url(): string {
-        $https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
-            || strtolower((string)($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '')) === 'https';
-        $host = preg_replace('/[^A-Za-z0-9.\-:\[\]]/', '', (string)($_SERVER['HTTP_HOST'] ?? 'localhost'));
-        $dir = rtrim(str_replace('\\', '/', dirname((string)($_SERVER['SCRIPT_NAME'] ?? '/'))), '/');
-        return ($https ? 'https' : 'http') . '://' . $host . $dir . '/uploads/products';
-    }
-
-    /**
-     * Validates and stores an uploaded image ($_FILES entry). Returns [url, null] or [null, error].
-     * Accepts JPEG, PNG and WebP up to 6 MB. With GD available the image is resized to at most
-     * 1024px and re-encoded as JPEG, which also strips anything embedded in the file.
-     */
-    function bt_store_product_image(array $file): array {
-        if (($file['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) return [null, 'Upload failed (code ' . (int)($file['error'] ?? -1) . ').'];
-        if (!is_uploaded_file($file['tmp_name'] ?? '')) return [null, 'Invalid upload.'];
-        if ((int)$file['size'] <= 0 || (int)$file['size'] > 6 * 1024 * 1024) return [null, 'Photo must be smaller than 6 MB.'];
-        $info = @getimagesize($file['tmp_name']);
-        $types = [IMAGETYPE_JPEG => 'jpg', IMAGETYPE_PNG => 'png'];
-        if (defined('IMAGETYPE_WEBP')) $types[IMAGETYPE_WEBP] = 'webp';
-        if (!$info || !isset($types[$info[2]])) return [null, 'Only JPEG, PNG or WebP photos are allowed.'];
-
-        $bytes = null;
-        $ext = $types[$info[2]];
-        if (function_exists('imagecreatefromstring') && function_exists('imagejpeg')) {
-            $src = @imagecreatefromstring((string)file_get_contents($file['tmp_name']));
-            if ($src) {
-                $w = imagesx($src); $h = imagesy($src);
-                $scale = min(1, 1024 / max($w, $h));
-                $nw = max(1, (int)round($w * $scale)); $nh = max(1, (int)round($h * $scale));
-                $dst = imagecreatetruecolor($nw, $nh);
-                imagefill($dst, 0, 0, imagecolorallocate($dst, 255, 255, 255)); // flatten transparency onto white
-                imagecopyresampled($dst, $src, 0, 0, 0, 0, $nw, $nh, $w, $h);
-                ob_start(); imagejpeg($dst, null, 85); $bytes = ob_get_clean();
-                $src = $dst = null; // GD images are freed automatically (imagedestroy is deprecated)
-                $ext = 'jpg';
-            }
-        }
-        if ($bytes === null) $bytes = (string)file_get_contents($file['tmp_name']);
-
-        $name = sha1($bytes) . '.' . $ext;
-        $path = bt_uploads_dir() . '/' . $name;
-        if (!file_exists($path) && @file_put_contents($path, $bytes, LOCK_EX) === false) return [null, 'Could not save the photo on the server.'];
-        return [bt_uploads_base_url() . '/' . $name, null];
-    }
-
-    /** Deletes a stored photo if no product uses it any more. */
-    function bt_forget_product_image(PDO $db, string $url): void {
-        if ($url === '' || !preg_match('#/uploads/products/([a-f0-9]{40}\.(?:jpg|png|webp))$#', $url, $m)) return;
-        $q = $db->prepare("SELECT COUNT(*) FROM products WHERE imageUrl = ?");
-        $q->execute([$url]);
-        if ((int)$q->fetchColumn() === 0) @unlink(bt_uploads_dir() . '/' . $m[1]);
-    }
-}
 
 // ----------------------------------------------------
 // 3. SHOW SETUP SCREEN IF DATABASE NOT CONNECTED
@@ -959,9 +752,45 @@ $redirect = function (string $tab, string $message, bool $isError = false, array
     exit;
 };
 
+// Items posted by the sale forms (item_product_id[] / item_quantity[] / item_price[]), in the
+// app's CartItem shape. Items whose product was deleted keep their details from $previous.
+$readCart = function (array $previous) use ($db): array {
+    $prev = [];
+    foreach ($previous as $it) $prev[(int)($it['productId'] ?? 0)] = $it;
+    $ids = (array)($_POST['item_product_id'] ?? []);
+    $qtys = (array)($_POST['item_quantity'] ?? []);
+    $prices = (array)($_POST['item_price'] ?? []);
+    $pStmt = $db->prepare("SELECT name, category, unit, costPrice, imageUri FROM products WHERE id = ?");
+    $items = [];
+    foreach ($ids as $i => $rawId) {
+        $pId = (int)$rawId;
+        $qty = round((float)($qtys[$i] ?? 0), 4);
+        $price = max(0.0, (float)($prices[$i] ?? 0));
+        if ($pId <= 0 || $qty <= 0) continue;
+        $pStmt->execute([$pId]);
+        $p = $pStmt->fetch() ?: null;
+        if (!$p && !isset($prev[$pId])) continue;
+        $items[] = [
+            'productId' => $pId,
+            'productName' => (string)($p['name'] ?? $prev[$pId]['productName'] ?? 'Item'),
+            'category' => (string)(($p['category'] ?? '') ?: ($prev[$pId]['category'] ?? 'GENERAL')),
+            'unit' => (string)($p['unit'] ?? $prev[$pId]['unit'] ?? 'Piece'),
+            'unitPrice' => $price,
+            'quantity' => $qty,
+            'lineTotal' => round($qty * $price, 2),
+            'imageUri' => (string)($p['imageUri'] ?? $prev[$pId]['imageUri'] ?? ''),
+            'costPrice' => (float)($p['costPrice'] ?? $prev[$pId]['costPrice'] ?? 0),
+        ];
+    }
+    return $items;
+};
+
 // Handle POST Form Actions
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
+
+    // Every change below stamps updatedAt (the newer edit wins when the phone syncs), logs
+    // stock changes as differences, and re-derives customer totals instead of adding to them.
 
     // A. PRODUCT CRUD
     if ($action === 'create_product' || $action === 'update_product') {
@@ -994,28 +823,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $photoUrl = '';
         }
 
+        $now = bt_now_ms();
         if ($action === 'create_product') {
-            $now = round(microtime(true) * 1000);
-            $stmt = $db->prepare("INSERT INTO products (id, name, category, price, unitPrice, costPrice, stockQuantity, unit, minStockThreshold, description, imageUrl, lastRestockedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-            $stmt->execute([bt_next_id($db, 'products'), $name, $category, $unitPrice, $unitPrice, $costPrice, $stockQuantity, $unit, $minThreshold, $description, $photoUrl ?? '', $now]);
-            $prodId = bt_last_id('products');
-
-            if ($stockQuantity > 0) {
-                $logStmt = $db->prepare("INSERT INTO inventory_logs (id, productId, productName, changeType, quantityChanged, quantityAfter, unit, notes, timestamp) VALUES (?, ?, ?, 'RESTOCK', ?, ?, ?, 'Opening stock (web)', ?)");
-                $logStmt->execute([bt_next_id($db, 'inventory_logs'), $prodId, $name, $stockQuantity, $stockQuantity, $unit, $now]);
-            }
+            $prodId = bt_next_id($db, 'products');
+            bt_insert($db, 'products', [
+                'id' => $prodId, 'name' => $name, 'category' => $category, 'price' => $unitPrice, 'unitPrice' => $unitPrice,
+                'costPrice' => $costPrice, 'stockQuantity' => 0, 'unit' => $unit, 'minStockThreshold' => $minThreshold,
+                'description' => $description, 'imageUrl' => $photoUrl ?? '', 'lastRestockedAt' => $now, 'updatedAt' => $now,
+            ]);
+            if ($stockQuantity > 0) bt_adjust_stock($db, $prodId, $stockQuantity, 'RESTOCK', 'Opening stock (web)');
             $redirect('products', "Added \"$name\".");
         }
 
-        $stmt = $db->prepare("UPDATE products SET name = ?, category = ?, price = ?, unitPrice = ?, costPrice = ?, stockQuantity = ?, unit = ?, minStockThreshold = ?, description = ? WHERE id = ?");
-        $stmt->execute([$name, $category, $unitPrice, $unitPrice, $costPrice, $stockQuantity, $unit, $minThreshold, $description, $id]);
-        if ($photoUrl !== null) {
-            $old = $db->prepare("SELECT imageUrl FROM products WHERE id = ?");
-            $old->execute([$id]);
-            $oldUrl = (string)($old->fetchColumn() ?: '');
-            $db->prepare("UPDATE products SET imageUrl = ? WHERE id = ?")->execute([$photoUrl, $id]);
-            if ($oldUrl !== $photoUrl) bt_forget_product_image($db, $oldUrl);
-        }
+        $cur = $db->prepare("SELECT stockQuantity, imageUrl FROM products WHERE id = ?");
+        $cur->execute([$id]);
+        $before = $cur->fetch();
+        if (!$before) $redirect('products', 'That product no longer exists. It may have been deleted on another device.', true);
+
+        $fields = [
+            'name' => $name, 'category' => $category, 'price' => $unitPrice, 'unitPrice' => $unitPrice, 'costPrice' => $costPrice,
+            'unit' => $unit, 'minStockThreshold' => $minThreshold, 'description' => $description, 'updatedAt' => $now,
+        ];
+        if ($photoUrl !== null) $fields['imageUrl'] = $photoUrl;
+        bt_update($db, 'products', $id, $fields);
+        // A new stock count is saved as a logged change, so sales made on the phone meanwhile still count.
+        $diff = round($stockQuantity - (float)$before['stockQuantity'], 4);
+        if (abs($diff) > 0.00001) bt_adjust_stock($db, $id, $diff, 'ADJUSTMENT', 'Stock set to ' . fmtQty($stockQuantity) . ' (web)');
+        if ($photoUrl !== null && (string)$before['imageUrl'] !== $photoUrl) bt_forget_product_image($db, (string)$before['imageUrl']);
         $redirect('products', "Saved changes to \"$name\".");
     }
 
@@ -1030,22 +864,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $prod = $pStmt->fetch();
 
         if ($prod && $qty > 0) {
-            $change = $direction * $qty;
-            $newQty = max(0.0, (float)$prod['stockQuantity'] + $change);
-            $now = round(microtime(true) * 1000);
+            // Removing never takes stock below zero.
+            $change = $direction > 0 ? $qty : -min($qty, max(0.0, (float)$prod['stockQuantity']));
             $type = $direction > 0 ? 'RESTOCK' : 'CORRECTION';
             if ($notes === '') $notes = $direction > 0 ? 'Restocked (web)' : 'Stock removed (web)';
-
-            if ($direction > 0) {
-                $db->prepare("UPDATE products SET stockQuantity = ?, lastRestockedAt = ? WHERE id = ?")->execute([$newQty, $now, $id]);
-            } else {
-                $db->prepare("UPDATE products SET stockQuantity = ? WHERE id = ?")->execute([$newQty, $id]);
-            }
-            $db->prepare("INSERT INTO inventory_logs (id, productId, productName, changeType, quantityChanged, quantityAfter, unit, notes, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-               ->execute([bt_next_id($db, 'inventory_logs'), $id, $prod['name'], $type, $change, $newQty, $prod['unit'], $notes, $now]);
+            $newQty = abs($change) > 0 ? bt_adjust_stock($db, $id, $change, $type, $notes) : (float)$prod['stockQuantity'];
 
             $verb = $direction > 0 ? 'Added' : 'Removed';
-            $redirect('products', "$verb " . fmtQty($qty) . " {$prod['unit']} · {$prod['name']} now has " . fmtQty($newQty) . ".");
+            $redirect('products', "$verb " . fmtQty(abs($change)) . " {$prod['unit']} · {$prod['name']} now has " . fmtQty($newQty) . ".");
         }
         $redirect('products', 'Enter a quantity greater than zero.', true);
     }
@@ -1056,6 +882,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $old->execute([$id]);
         $oldUrl = (string)($old->fetchColumn() ?: '');
         $db->prepare("DELETE FROM products WHERE id = ?")->execute([$id]);
+        bt_record_deletion($db, 'products', $id);
         bt_forget_product_image($db, $oldUrl);
         $redirect('products', 'Product deleted. Past sales keep their records.');
     }
@@ -1070,9 +897,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $initialDebt = max(0.0, (float)($_POST['initial_debt'] ?? 0.0));
 
         if ($name === '') $redirect('customers', 'Give the customer a name.', true);
-        $now = round(microtime(true) * 1000);
-        $stmt = $db->prepare("INSERT INTO customers (id, name, phone, whatsapp, address, notes, totalDebt, currentBalance, totalPurchases, totalPaid, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-        $stmt->execute([bt_next_id($db, 'customers'), $name, $phone, $whatsapp, $address, $notes, $initialDebt, $initialDebt, $initialDebt, 0.0, $now]);
+        $now = bt_now_ms();
+        // Money owed from before BizTrack is the opening balance; later sales add to it.
+        bt_insert($db, 'customers', [
+            'id' => bt_next_id($db, 'customers'), 'name' => $name, 'phone' => $phone, 'whatsapp' => $whatsapp,
+            'address' => $address, 'notes' => $notes, 'openingBalance' => $initialDebt, 'openingPurchases' => $initialDebt,
+            'totalDebt' => $initialDebt, 'currentBalance' => $initialDebt, 'totalPurchases' => $initialDebt,
+            'totalPurchased' => $initialDebt, 'totalPaid' => 0.0, 'createdAt' => $now, 'updatedAt' => $now,
+        ]);
         $redirect('customers', "Added $name.");
     }
 
@@ -1085,14 +917,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $notes = trim($_POST['notes'] ?? '');
 
         if ($name === '') $redirect('customers', 'Give the customer a name.', true);
-        $stmt = $db->prepare("UPDATE customers SET name = ?, phone = ?, whatsapp = ?, address = ?, notes = ? WHERE id = ?");
-        $stmt->execute([$name, $phone, $whatsapp, $address, $notes, $id]);
+        bt_update($db, 'customers', $id, [
+            'name' => $name, 'phone' => $phone, 'whatsapp' => $whatsapp, 'address' => $address, 'notes' => $notes, 'updatedAt' => bt_now_ms(),
+        ]);
         $redirect('customers', "Saved changes to $name.");
     }
 
     if ($action === 'delete_customer') {
         $id = (int)$_POST['id'];
         $db->prepare("DELETE FROM customers WHERE id = ?")->execute([$id]);
+        bt_record_deletion($db, 'customers', $id);
         $redirect('customers', 'Customer deleted. Their past invoices are kept.');
     }
 
@@ -1120,77 +954,45 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
 
-        $itemIds = $_POST['item_product_id'] ?? [];
-        $itemQtys = $_POST['item_quantity'] ?? [];
-        $itemPrices = $_POST['item_price'] ?? [];
-
-        $cartItems = [];
-        $grossTotal = 0.0;
-        $now = round(microtime(true) * 1000);
+        $cartItems = $readCart([]);
+        if (empty($cartItems)) $redirect('new_sale', 'Add at least one item to the sale.', true);
+        $grossTotal = array_sum(array_column($cartItems, 'lineTotal'));
+        $now = bt_now_ms();
+        $invoiceNum = 'INV-' . date('ymd') . '-' . random_int(1000, 9999);
 
         $db->beginTransaction();
         try {
-            for ($i = 0; $i < count($itemIds); $i++) {
-                $pId = (int)$itemIds[$i];
-                $qty = (float)($itemQtys[$i] ?? 0);
-                $price = max(0.0, (float)($itemPrices[$i] ?? 0));
-
-                if ($pId > 0 && $qty > 0) {
-                    $pStmt = $db->prepare("SELECT name, category, unit, costPrice, stockQuantity, imageUri FROM products WHERE id = ?");
-                    $pStmt->execute([$pId]);
-                    $pRow = $pStmt->fetch();
-
-                    if ($pRow) {
-                        $lineTotal = $qty * $price;
-                        $grossTotal += $lineTotal;
-                        // Same shape as the app's CartItem (category is required there).
-                        $cartItems[] = [
-                            'productId' => $pId,
-                            'productName' => $pRow['name'],
-                            'category' => (string)($pRow['category'] ?: 'GENERAL'),
-                            'unit' => $pRow['unit'],
-                            'unitPrice' => $price,
-                            'quantity' => $qty,
-                            'lineTotal' => $lineTotal,
-                            'imageUri' => (string)($pRow['imageUri'] ?? ''),
-                            'costPrice' => (float)$pRow['costPrice'],
-                        ];
-
-                        $newStock = max(0.0, (float)$pRow['stockQuantity'] - $qty);
-                        $db->prepare("UPDATE products SET stockQuantity = ? WHERE id = ?")->execute([$newStock, $pId]);
-                        $db->prepare("INSERT INTO inventory_logs (id, productId, productName, changeType, quantityChanged, quantityAfter, unit, notes, timestamp) VALUES (?, ?, ?, 'SALE', ?, ?, ?, 'Sold (web)', ?)")
-                           ->execute([bt_next_id($db, 'inventory_logs'), $pId, $pRow['name'], -$qty, $newStock, $pRow['unit'], $now]);
-                    }
-                }
-            }
-
-            if (empty($cartItems)) {
-                $db->rollBack();
-                $redirect('new_sale', 'Add at least one item to the sale.', true);
+            foreach ($cartItems as $item) {
+                bt_adjust_stock($db, $item['productId'], -$item['quantity'], 'SALE', "Sold on #$invoiceNum (web)");
             }
 
             $netTotal = max(0.0, $grossTotal - $discountAmount);
             $amountPaid = min($amountPaid, $netTotal); // change is handed back, not recorded as payment
             $balanceDue = max(0.0, $netTotal - $amountPaid);
             $paymentStatus = ($balanceDue <= 0.001) ? 'PAID' : (($amountPaid > 0.001) ? 'PARTIAL' : 'UNPAID');
-            $invoiceNum = 'INV-' . date('ymd') . '-' . random_int(1000, 9999);
-            $itemsJson = json_encode($cartItems);
 
-            $soStmt = $db->prepare("INSERT INTO sales_orders (id, invoiceNumber, customerId, customerName, customerPhone, customerWhatsapp, itemsJson, totalAmount, amountPaid, debtAmount, balanceDue, discountAmount, paymentStatus, paymentMethod, notes, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-            $soStmt->execute([bt_next_id($db, 'sales_orders'), $invoiceNum, ($customerId > 0 ? $customerId : null), $customerName, $customerPhone, $customerWhatsapp, $itemsJson, $netTotal, $amountPaid, $balanceDue, $balanceDue, $discountAmount, $paymentStatus, $paymentMethod, $notes, $now]);
-            $orderId = bt_last_id('sales_orders');
+            $orderId = bt_next_id($db, 'sales_orders');
+            bt_insert($db, 'sales_orders', [
+                'id' => $orderId, 'invoiceNumber' => $invoiceNum, 'customerId' => $customerId > 0 ? $customerId : null,
+                'customerName' => $customerName, 'customerPhone' => $customerPhone, 'customerWhatsapp' => $customerWhatsapp,
+                'itemsJson' => json_encode($cartItems), 'totalAmount' => $netTotal, 'amountPaid' => $amountPaid,
+                'debtAmount' => $balanceDue, 'balanceDue' => $balanceDue, 'discountAmount' => $discountAmount,
+                'paymentStatus' => $paymentStatus, 'paymentMethod' => $paymentMethod, 'notes' => $notes,
+                'timestamp' => $now, 'updatedAt' => $now,
+            ]);
 
             if ($customerId > 0) {
-                $db->prepare("UPDATE customers SET totalPurchases = totalPurchases + ?, totalPaid = totalPaid + ?, totalDebt = totalDebt + ?, currentBalance = currentBalance + ?, lastTransactionDate = ? WHERE id = ?")
-                   ->execute([$netTotal, $amountPaid, $balanceDue, $balanceDue, $now, $customerId]);
-
+                $db->prepare("UPDATE customers SET lastTransactionDate = ? WHERE id = ?")->execute([$now, $customerId]);
+                bt_recalc_customers($db);
                 if ($amountPaid > 0) {
                     $cBalStmt = $db->prepare("SELECT currentBalance FROM customers WHERE id = ?");
                     $cBalStmt->execute([$customerId]);
-                    $balNow = (float)($cBalStmt->fetchColumn() ?: 0.0);
-
-                    $db->prepare("INSERT INTO payments (id, customerId, customerName, saleOrderId, amount, paymentMethod, notes, timestamp, balanceAfterPayment) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-                       ->execute([bt_next_id($db, 'payments'), $customerId, $customerName, $orderId, $amountPaid, $paymentMethod, "Payment on #$invoiceNum", $now, $balNow]);
+                    bt_insert($db, 'payments', [
+                        'id' => bt_next_id($db, 'payments'), 'customerId' => $customerId, 'customerName' => $customerName,
+                        'saleOrderId' => $orderId, 'amount' => $amountPaid, 'paymentMethod' => $paymentMethod,
+                        'notes' => "Payment on #$invoiceNum", 'timestamp' => $now,
+                        'balanceAfterPayment' => (float)($cBalStmt->fetchColumn() ?: 0.0), 'updatedAt' => $now,
+                    ]);
                 }
             }
             $db->commit();
@@ -1203,13 +1005,88 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $redirect('sales', "Sale #$invoiceNum recorded · " . $currency . ' ' . number_format($netTotal, 2), false, ['open' => $orderId]);
     }
 
+    // C2. EDIT A SALE (same rules as the app: stock follows the item changes, the customer stays)
+    if ($action === 'update_sale') {
+        $id = (int)($_POST['id'] ?? 0);
+        $q = $db->prepare("SELECT * FROM sales_orders WHERE id = ?");
+        $q->execute([$id]);
+        $order = $q->fetch();
+        if (!$order) $redirect('sales', 'That sale no longer exists. It may have been deleted on another device.', true);
+        $invoice = invoiceNo($order);
+
+        $oldItems = json_decode((string)($order['itemsJson'] ?? '[]'), true) ?: [];
+        $newItems = $readCart($oldItems);
+        if (empty($newItems)) $redirect('sales', "A sale needs at least one item. To cancel #$invoice, delete it instead.", true, ['open' => $id]);
+
+        $discountAmount = max(0.0, (float)($_POST['discount_amount'] ?? 0.0));
+        $netTotal = max(0.0, array_sum(array_column($newItems, 'lineTotal')) - $discountAmount);
+        $amountPaid = min(max(0.0, (float)($_POST['amount_paid'] ?? 0.0)), $netTotal);
+        $balanceDue = max(0.0, $netTotal - $amountPaid);
+        $paymentStatus = ($balanceDue <= 0.001) ? 'PAID' : (($amountPaid > 0.001) ? 'PARTIAL' : 'UNPAID');
+
+        $qtyBy = function (array $items): array {
+            $m = [];
+            foreach ($items as $it) $m[(int)($it['productId'] ?? 0)] = ($m[(int)($it['productId'] ?? 0)] ?? 0) + (float)($it['quantity'] ?? 0);
+            return $m;
+        };
+        $oldQty = $qtyBy($oldItems); $newQty = $qtyBy($newItems);
+
+        $db->beginTransaction();
+        try {
+            foreach (array_unique(array_merge(array_keys($oldQty), array_keys($newQty))) as $pid) {
+                $delta = round(($oldQty[$pid] ?? 0) - ($newQty[$pid] ?? 0), 4);
+                if ($pid > 0 && abs($delta) > 0.00001) bt_adjust_stock($db, $pid, $delta, 'INVOICE_EDIT', "Adjusted for edited Invoice #$invoice (web)");
+            }
+            bt_update($db, 'sales_orders', $id, [
+                'itemsJson' => json_encode($newItems), 'totalAmount' => $netTotal, 'discountAmount' => $discountAmount,
+                'amountPaid' => $amountPaid, 'balanceDue' => $balanceDue, 'debtAmount' => $balanceDue,
+                'paymentStatus' => $paymentStatus, 'paymentMethod' => $validMethod((string)($_POST['payment_method'] ?? $order['paymentMethod'])),
+                'notes' => trim($_POST['notes'] ?? ''), 'updatedAt' => bt_now_ms(),
+            ]);
+            bt_recalc_customers($db);
+            $db->commit();
+        } catch (Exception $ex) {
+            if ($db->inTransaction()) $db->rollBack();
+            error_log('BizTrack sale edit error: ' . $ex->getMessage());
+            $redirect('sales', "Changes to #$invoice could not be saved. Please try again.", true, ['open' => $id]);
+        }
+        $redirect('sales', "Saved changes to #$invoice · now " . $currency . ' ' . number_format($netTotal, 2), false, ['open' => $id]);
+    }
+
+    // C3. DELETE (VOID) A SALE: stock goes back, the customer no longer owes for it
+    if ($action === 'delete_sale') {
+        $id = (int)($_POST['id'] ?? 0);
+        $q = $db->prepare("SELECT * FROM sales_orders WHERE id = ?");
+        $q->execute([$id]);
+        $order = $q->fetch();
+        if (!$order) $redirect('sales', 'That sale was already deleted.');
+        $invoice = invoiceNo($order);
+
+        $db->beginTransaction();
+        try {
+            foreach ((json_decode((string)($order['itemsJson'] ?? '[]'), true) ?: []) as $it) {
+                $pid = (int)($it['productId'] ?? 0); $qty = (float)($it['quantity'] ?? 0);
+                if ($pid > 0 && $qty > 0) bt_adjust_stock($db, $pid, $qty, 'VOID_RESTORE', "Stock restored from voided Invoice #$invoice (web)");
+            }
+            $db->prepare("DELETE FROM sales_orders WHERE id = ?")->execute([$id]);
+            bt_record_deletion($db, 'sales_orders', $id);
+            bt_recalc_customers($db);
+            $db->commit();
+        } catch (Exception $ex) {
+            if ($db->inTransaction()) $db->rollBack();
+            error_log('BizTrack sale delete error: ' . $ex->getMessage());
+            $redirect('sales', "#$invoice could not be deleted. Please try again.", true);
+        }
+        $redirect('sales', "Deleted sale #$invoice. Its items are back in stock.");
+    }
+
     // D. RECORD PAYMENT / DEBT RECOVERY
     if ($action === 'record_payment') {
         $customerId = (int)$_POST['customer_id'];
         $amount = (float)($_POST['amount'] ?? 0.0);
         $method = $validMethod((string)($_POST['payment_method'] ?? 'CASH'));
         $notes = trim($_POST['notes'] ?? '') ?: 'Payment recorded (web)';
-        $now = round(microtime(true) * 1000);
+        $now = bt_now_ms();
         $back = in_array($_POST['return_tab'] ?? '', ['dashboard', 'customers'], true) ? $_POST['return_tab'] : 'customers';
 
         if ($customerId > 0 && $amount > 0) {
@@ -1224,28 +1101,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $newBal = max(0.0, $curBal - $amount);
 
                 $db->beginTransaction();
-                $db->prepare("UPDATE customers SET totalPaid = totalPaid + ?, totalDebt = ?, currentBalance = ?, lastTransactionDate = ? WHERE id = ?")
-                   ->execute([$amount, $newBal, $newBal, $now, $customerId]);
-
-                $db->prepare("INSERT INTO payments (id, customerId, customerName, saleOrderId, amount, paymentMethod, notes, timestamp, balanceAfterPayment) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)")
-                   ->execute([bt_next_id($db, 'payments'), $customerId, $cust['name'], $amount, $method, $notes, $now, $newBal]);
-
-                // Apply the payment to the oldest unpaid invoices first.
-                $ordersStmt = $db->prepare("SELECT id, balanceDue, amountPaid FROM sales_orders WHERE customerId = ? AND balanceDue > 0 ORDER BY timestamp ASC");
+                // Pay off the oldest unpaid invoices first.
+                $ordersStmt = $db->prepare("SELECT id, totalAmount, balanceDue, amountPaid FROM sales_orders WHERE customerId = ? AND balanceDue > 0 ORDER BY timestamp ASC");
                 $ordersStmt->execute([$customerId]);
                 $remainingPayment = $amount;
+                $lastOrderId = null;
                 foreach ($ordersStmt->fetchAll() as $ord) {
                     if ($remainingPayment <= 0) break;
-                    $ordBal = (float)$ord['balanceDue'];
-                    $paidOnThis = min($remainingPayment, $ordBal);
-                    $newOrdBal = max(0.0, $ordBal - $paidOnThis);
-                    $newOrdPaid = (float)$ord['amountPaid'] + $paidOnThis;
-                    $newStatus = ($newOrdBal <= 0.001) ? 'PAID' : 'PARTIAL';
-
-                    $db->prepare("UPDATE sales_orders SET balanceDue = ?, debtAmount = ?, amountPaid = ?, paymentStatus = ? WHERE id = ?")
-                       ->execute([$newOrdBal, $newOrdBal, $newOrdPaid, $newStatus, $ord['id']]);
+                    $paidOnThis = min($remainingPayment, (float)$ord['balanceDue']);
+                    $newOrdPaid = min((float)$ord['totalAmount'], (float)$ord['amountPaid'] + $paidOnThis);
+                    $newOrdBal = max(0.0, (float)$ord['totalAmount'] - $newOrdPaid);
+                    bt_update($db, 'sales_orders', (int)$ord['id'], [
+                        'balanceDue' => $newOrdBal, 'debtAmount' => $newOrdBal, 'amountPaid' => $newOrdPaid,
+                        'paymentStatus' => $newOrdBal <= 0.001 ? 'PAID' : 'PARTIAL', 'updatedAt' => $now,
+                    ]);
+                    $lastOrderId = (int)$ord['id'];
                     $remainingPayment -= $paidOnThis;
                 }
+                // Whatever is left pays off the opening balance (debt from before BizTrack).
+                $custFields = ['lastTransactionDate' => $now];
+                if ($remainingPayment > 0.0001 && (float)$cust['openingBalance'] > 0) {
+                    $custFields['openingBalance'] = max(0.0, (float)$cust['openingBalance'] - $remainingPayment);
+                    $custFields['updatedAt'] = $now;
+                }
+                bt_update($db, 'customers', $customerId, $custFields);
+                bt_insert($db, 'payments', [
+                    'id' => bt_next_id($db, 'payments'), 'customerId' => $customerId, 'customerName' => $cust['name'],
+                    'saleOrderId' => $lastOrderId, 'amount' => $amount, 'paymentMethod' => $method, 'notes' => $notes,
+                    'timestamp' => $now, 'balanceAfterPayment' => $newBal, 'updatedAt' => $now,
+                ]);
+                bt_recalc_customers($db);
                 $db->commit();
 
                 $left = $newBal > 0.009 ? ' · still owes ' . $currency . ' ' . number_format($newBal, 2) : ' · fully settled';
@@ -1264,8 +1149,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $mMomo = trim($_POST['momoPaymentDetails'] ?? '');
         $cSymbol = trim($_POST['currencySymbol'] ?? '') ?: 'GH₵';
 
-        $stmt = $db->prepare("REPLACE INTO app_settings (id, businessName, businessTagline, businessPhone, businessLocation, momoPaymentDetails, currencySymbol) VALUES (1, ?, ?, ?, ?, ?, ?)");
-        $stmt->execute([$bName, $bTagline, $bPhone, $bLocation, $mMomo, $cSymbol]);
+        $db->prepare("INSERT INTO app_settings (id, businessName, businessTagline, businessPhone, businessLocation, momoPaymentDetails, currencySymbol, updatedAt)
+                      VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+                      ON DUPLICATE KEY UPDATE businessName = VALUES(businessName), businessTagline = VALUES(businessTagline),
+                        businessPhone = VALUES(businessPhone), businessLocation = VALUES(businessLocation),
+                        momoPaymentDetails = VALUES(momoPaymentDetails), currencySymbol = VALUES(currencySymbol), updatedAt = VALUES(updatedAt)")
+           ->execute([$bName, $bTagline, $bPhone, $bLocation, $mMomo, $cSymbol, bt_now_ms()]);
         $redirect('settings', 'Business details saved.');
     }
 }
@@ -1279,6 +1168,7 @@ $validTabs = ['dashboard', 'new_sale', 'sales', 'products', 'customers', 'paymen
 if (!in_array($tab, $validTabs, true)) $tab = 'dashboard';
 
 $totalSalesSum = (float)($db->query("SELECT SUM(totalAmount) FROM sales_orders")->fetchColumn() ?: 0.0);
+$totalSalesCount = (int)($db->query("SELECT COUNT(*) FROM sales_orders")->fetchColumn() ?: 0);
 $totalCollectedSum = (float)($db->query("SELECT SUM(amountPaid) FROM sales_orders")->fetchColumn() ?: 0.0);
 $totalDebtSum = (float)($db->query("SELECT SUM(COALESCE(currentBalance, totalDebt, 0)) FROM customers WHERE COALESCE(currentBalance, totalDebt, 0) > 0")->fetchColumn() ?: 0.0);
 $totalProductsCount = (int)($db->query("SELECT COUNT(*) FROM products")->fetchColumn() ?: 0);
@@ -1404,15 +1294,23 @@ if ($tab === 'dashboard'):
     $topDebtors = $db->query("SELECT * FROM customers WHERE COALESCE(currentBalance, totalDebt, 0) > 0.009 ORDER BY COALESCE(currentBalance, totalDebt, 0) DESC LIMIT 5")->fetchAll();
     $lowStock = $db->query("SELECT * FROM products WHERE stockQuantity <= minStockThreshold ORDER BY stockQuantity ASC LIMIT 5")->fetchAll();
 
-    // Last 14 days of sales, bucketed per day.
-    $days = 14;
-    $chartStartMs = strtotime('today -' . ($days - 1) . ' days') * 1000;
+    // Last 14 days of sales, bucketed per day, plus a trailing 7-day average (needs 6 earlier days).
+    $days = 14; $avgWindow = 7;
+    $lookback = $days + $avgWindow - 1;
     $q = $db->prepare("SELECT timestamp, totalAmount, itemsJson FROM sales_orders WHERE timestamp >= ?");
-    $q->execute([min($chartStartMs, strtotime('first day of last month 00:00') * 1000)]);
+    $q->execute([min(strtotime('today -' . ($lookback - 1) . ' days') * 1000, strtotime('first day of last month 00:00') * 1000)]);
     $periodRows = $q->fetchAll();
 
-    $series = [];
-    for ($i = 0; $i < $days; $i++) { $series[date('Y-m-d', strtotime("today -" . ($days - 1 - $i) . " days"))] = 0.0; }
+    $daily = [];
+    for ($i = 0; $i < $lookback; $i++) { $daily[date('Y-m-d', strtotime("today -" . ($lookback - 1 - $i) . " days"))] = 0.0; }
+    foreach ($periodRows as $r) {
+        $key = date('Y-m-d', (int)round((float)$r['timestamp'] / 1000));
+        if (isset($daily[$key])) $daily[$key] += (float)$r['totalAmount'];
+    }
+    $dailyValues = array_values($daily);
+    $series = array_slice($daily, $avgWindow - 1, $days, true);
+    $avgSeries = [];
+    for ($i = 0; $i < $days; $i++) $avgSeries[] = array_sum(array_slice($dailyValues, $i, $avgWindow)) / $avgWindow;
     $todayTotal = 0.0; $todayCount = 0;
     $thisMonthStart = strtotime('first day of this month 00:00') * 1000;
     $lastMonthStart = strtotime('first day of last month 00:00') * 1000;
@@ -1421,8 +1319,6 @@ if ($tab === 'dashboard'):
     $productTotals = [];
     foreach ($periodRows as $r) {
         $ms = (float)$r['timestamp']; $amt = (float)$r['totalAmount'];
-        $key = date('Y-m-d', (int)round($ms / 1000));
-        if (isset($series[$key])) $series[$key] += $amt;
         if ($ms >= $todayStartMs) { $todayTotal += $amt; $todayCount++; }
         if ($ms >= $thisMonthStart) {
             $thisMonth += $amt;
@@ -1447,15 +1343,20 @@ if ($tab === 'dashboard'):
             . '<a href="index.php?tab=new_sale" class="btn btn-primary">' . icon('plus', 'ic-sm') . ' New sale</a>'); ?>
 
         <!-- KPIs -->
-        <section class="grid grid-cols-2 xl:grid-cols-4 gap-3 lg:gap-5 mb-6" aria-label="Key figures">
-            <div class="card card-pad">
-                <div class="flex items-center gap-2 muted text-sm font-medium"><span class="tile bg-tone-primary" style="width:32px;height:32px;border-radius:10px"><?= icon('trend', 'ic-sm') ?></span> Today</div>
-                <div class="kpi"><?= money($todayTotal) ?></div>
+        <section class="kpi-wrap mb-6" aria-label="Key figures"><div class="kpi-grid">
+            <a href="index.php?tab=sales" class="card card-pad kpi-card kpi-hero block transition hover:ring-2" style="--tw-ring-color:var(--primary)">
+                <div class="flex items-center gap-2 muted text-sm font-medium"><span class="kpi-icon bg-tone-primary"><?= icon('chart', 'ic-sm') ?></span> Total sales</div>
+                <div class="kpi"><?= kpiMoney($totalSalesSum) ?></div>
+                <div class="text-sm muted mt-1"><?= number_format($totalSalesCount) ?> <?= $totalSalesCount === 1 ? 'sale' : 'sales' ?> all time<?= $totalSalesCount > 0 ? ' · ' . money($totalSalesSum / $totalSalesCount) . ' average' : '' ?></div>
+            </a>
+            <div class="card card-pad kpi-card">
+                <div class="flex items-center gap-2 muted text-sm font-medium"><span class="kpi-icon bg-tone-primary"><?= icon('trend', 'ic-sm') ?></span> Today</div>
+                <div class="kpi"><?= kpiMoney($todayTotal) ?></div>
                 <div class="text-sm muted mt-1"><?= $todayCount ?> <?= $todayCount === 1 ? 'sale' : 'sales' ?></div>
             </div>
-            <div class="card card-pad">
-                <div class="flex items-center gap-2 muted text-sm font-medium"><span class="tile bg-tone-info" style="width:32px;height:32px;border-radius:10px"><?= icon('receipt', 'ic-sm') ?></span> This month</div>
-                <div class="kpi"><?= money($thisMonth) ?></div>
+            <div class="card card-pad kpi-card">
+                <div class="flex items-center gap-2 muted text-sm font-medium"><span class="kpi-icon bg-tone-info"><?= icon('receipt', 'ic-sm') ?></span> This month</div>
+                <div class="kpi"><?= kpiMoney($thisMonth) ?></div>
                 <div class="text-sm mt-1 flex items-center gap-1">
                     <?php if ($monthDelta === null): ?>
                         <span class="muted">No sales last month to compare</span>
@@ -1465,37 +1366,95 @@ if ($tab === 'dashboard'):
                     <?php endif; ?>
                 </div>
             </div>
-            <div class="card card-pad">
-                <div class="flex items-center gap-2 muted text-sm font-medium"><span class="tile bg-tone-success" style="width:32px;height:32px;border-radius:10px"><?= icon('checkCircle', 'ic-sm') ?></span> Collected</div>
-                <div class="kpi"><?= money($totalCollectedSum) ?></div>
-                <div class="text-sm muted mt-1">of <?= money($totalSalesSum) ?> sold</div>
+            <div class="card card-pad kpi-card">
+                <div class="flex items-center gap-2 muted text-sm font-medium"><span class="kpi-icon bg-tone-success"><?= icon('checkCircle', 'ic-sm') ?></span> Collected</div>
+                <div class="kpi"><?= kpiMoney($totalCollectedSum) ?></div>
+                <div class="text-sm muted mt-1"><?= $totalSalesSum > 0 ? number_format($totalCollectedSum / $totalSalesSum * 100, 0) . '% of total sales' : 'Nothing sold yet' ?></div>
             </div>
-            <a href="index.php?tab=customers&filter=owing" class="card card-pad block transition hover:ring-2" style="--tw-ring-color:var(--danger)">
-                <div class="flex items-center gap-2 muted text-sm font-medium"><span class="tile bg-tone-danger" style="width:32px;height:32px;border-radius:10px"><?= icon('clock', 'ic-sm') ?></span> Owed to you</div>
-                <div class="kpi <?= $totalDebtSum > 0 ? 'text-danger' : '' ?>"><?= money($totalDebtSum) ?></div>
+            <a href="index.php?tab=customers&filter=owing" class="card card-pad kpi-card block transition hover:ring-2" style="--tw-ring-color:var(--danger)">
+                <div class="flex items-center gap-2 muted text-sm font-medium"><span class="kpi-icon bg-tone-danger"><?= icon('clock', 'ic-sm') ?></span> Owed to you</div>
+                <div class="kpi <?= $totalDebtSum > 0 ? 'text-danger' : '' ?>"><?= kpiMoney($totalDebtSum) ?></div>
                 <div class="text-sm muted mt-1"><?= $debtorsCount ?> <?= $debtorsCount === 1 ? 'customer' : 'customers' ?> owing</div>
             </a>
-        </section>
+        </div></section>
 
         <div class="grid grid-cols-1 xl:grid-cols-3 gap-5">
             <!-- Chart -->
             <section class="card card-pad xl:col-span-2">
-                <div class="flex items-start justify-between gap-4 mb-6">
+                <?php
+                    // Bars (each day) and the line (7-day average) share one money scale.
+                    $pct = fn(float $v): float => round($v / $maxDay * 100, 2);
+                    $points = [];
+                    foreach ($avgSeries as $i => $avg) $points[] = ($i + 0.5) . ',' . (100 - $pct($avg));
+                    $lastAvg = end($avgSeries);
+                ?>
+                <div class="flex flex-wrap items-start justify-between gap-x-6 gap-y-3 mb-6">
                     <div>
                         <h2 class="section-title">Sales, last 14 days</h2>
-                        <p class="muted text-sm mt-0.5"><?= money($chartTotal) ?> total · <?= money($chartTotal / $days) ?> per day on average</p>
+                        <p class="muted text-sm mt-0.5"><?= money($chartTotal) ?> total · 7-day average now <?= money($lastAvg) ?> a day</p>
                     </div>
+                    <ul class="chart-legend" aria-label="Legend">
+                        <li><span class="swatch-bar" aria-hidden="true"></span>Daily sales</li>
+                        <li><span class="swatch-line" aria-hidden="true"></span>7-day average</li>
+                    </ul>
                 </div>
-                <div class="bars" role="img" aria-label="Daily sales for the last 14 days">
-                    <?php $i = 0; foreach ($series as $day => $amt): $isToday = $i === $days - 1; $i++; ?>
-                        <div class="bar-wrap" title="<?= e(date('D j M', strtotime($day))) ?> · <?= e($currency) ?> <?= number_format($amt, 2) ?>">
-                            <div class="bar <?= $isToday ? 'today' : '' ?>" style="height: <?= max(2, round($amt / $maxDay * 100)) ?>%"></div>
-                        </div>
-                    <?php endforeach; ?>
+                <div class="chart" id="salesChart" aria-hidden="true">
+                    <div class="bars">
+                        <?php $i = 0; foreach ($series as $day => $amt): ?>
+                            <div class="bar-wrap" data-day="<?= e(date('D j M', strtotime($day))) ?>" data-sales="<?= e(money($amt)) ?>" data-avg="<?= e(money($avgSeries[$i])) ?>">
+                                <div class="bar" style="height: <?= max(2, $pct($amt)) ?>%"></div>
+                            </div>
+                        <?php $i++; endforeach; ?>
+                    </div>
+                    <svg class="avg-line" viewBox="0 0 <?= $days ?> 100" preserveAspectRatio="none">
+                        <polyline class="halo" points="<?= implode(' ', $points) ?>" vector-effect="non-scaling-stroke"/>
+                        <polyline class="stroke" points="<?= implode(' ', $points) ?>" vector-effect="non-scaling-stroke"/>
+                    </svg>
+                    <span class="avg-dot" style="left: <?= round(($days - 0.5) / $days * 100, 3) ?>%; bottom: <?= $pct($lastAvg) ?>%"></span>
+                    <div class="chart-tip" role="presentation" hidden></div>
                 </div>
-                <div class="flex justify-between text-xs subtle mt-3 tnum">
+                <div class="flex justify-between text-xs subtle mt-3 tnum" aria-hidden="true">
                     <span><?= date('j M', strtotime('today -13 days')) ?></span><span><?= date('j M', strtotime('today -7 days')) ?></span><span>Today</span>
                 </div>
+                <table class="sr-only">
+                    <caption>Daily sales and 7-day average, last 14 days</caption>
+                    <thead><tr><th scope="col">Day</th><th scope="col">Sales</th><th scope="col">7-day average</th></tr></thead>
+                    <tbody>
+                        <?php $i = 0; foreach ($series as $day => $amt): ?>
+                            <tr><th scope="row"><?= e(date('D j M', strtotime($day))) ?></th><td><?= money($amt) ?></td><td><?= money($avgSeries[$i++]) ?></td></tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+                <script>
+                (function () {
+                    const chart = document.getElementById('salesChart');
+                    const tip = chart.querySelector('.chart-tip');
+                    const show = (wrap) => {
+                        tip.innerHTML = '';
+                        const head = document.createElement('div'); head.className = 'tip-day'; head.textContent = wrap.dataset.day;
+                        tip.append(head);
+                        [['swatch-bar', 'Sales', wrap.dataset.sales], ['swatch-line', '7-day avg', wrap.dataset.avg]].forEach(([sw, label, val]) => {
+                            const row = document.createElement('div'); row.className = 'tip-row';
+                            const s = document.createElement('span'); s.className = sw;
+                            const l = document.createElement('span'); l.textContent = label;
+                            const v = document.createElement('b'); v.textContent = val;
+                            row.append(s, l, v); tip.append(row);
+                        });
+                        tip.hidden = false;
+                        const c = chart.getBoundingClientRect(), w = wrap.getBoundingClientRect();
+                        const x = w.left - c.left + w.width / 2;
+                        tip.style.left = Math.min(Math.max(x - tip.offsetWidth / 2, 0), c.width - tip.offsetWidth) + 'px';
+                        chart.querySelectorAll('.bar-wrap.active').forEach(b => b.classList.remove('active'));
+                        wrap.classList.add('active');
+                    };
+                    const hide = () => { tip.hidden = true; chart.querySelectorAll('.bar-wrap.active').forEach(b => b.classList.remove('active')); };
+                    chart.querySelectorAll('.bar-wrap').forEach(w => {
+                        w.addEventListener('pointerenter', () => show(w));
+                        w.addEventListener('click', () => show(w)); // touch screens
+                    });
+                    chart.addEventListener('pointerleave', hide);
+                })();
+                </script>
             </section>
 
             <!-- Top products -->
@@ -1954,11 +1913,11 @@ elseif ($tab === 'sales'):
                         $order = [
                             'id' => (int)$s['id'], 'invoice' => invoiceNo($s), 'customer' => $s['customerName'], 'phone' => $s['customerPhone'],
                             'date' => fmtDate($s['timestamp'], 'j M Y, H:i'), 'items' => array_map(fn($i) => [
-                                'name' => (string)($i['productName'] ?? 'Item'), 'qty' => (float)($i['quantity'] ?? 0),
+                                'productId' => (int)($i['productId'] ?? 0), 'name' => (string)($i['productName'] ?? 'Item'), 'qty' => (float)($i['quantity'] ?? 0),
                                 'unit' => (string)($i['unit'] ?? ''), 'price' => (float)($i['unitPrice'] ?? 0), 'total' => (float)($i['lineTotal'] ?? 0)], $items),
                             'discount' => (float)$s['discountAmount'], 'total' => (float)$s['totalAmount'], 'paid' => (float)$s['amountPaid'],
                             'balance' => (float)$s['balanceDue'], 'status' => $stLabel, 'tone' => $stTone, 'method' => methodLabel((string)$s['paymentMethod']),
-                            'notes' => (string)($s['notes'] ?? ''),
+                            'notes' => (string)($s['notes'] ?? ''), 'methodKey' => strtoupper((string)($s['paymentMethod'] ?: 'CASH')),
                         ];
                     ?>
                         <tr class="clickable" tabindex="0" data-order='<?= jsonAttr($order) ?>' data-status="<?= $stLabel ?>" data-ts="<?= (int)$s['timestamp'] ?>"
@@ -2022,8 +1981,83 @@ elseif ($tab === 'sales'):
                         <button type="button" class="btn btn-secondary flex-1" onclick="window.print()"><?= icon('printer', 'ic-sm') ?> Print</button>
                         <a id="rcptWhatsapp" class="btn btn-success flex-1" target="_blank" rel="noopener"><?= icon('chat', 'ic-sm') ?> WhatsApp</a>
                     </div>
+                    <div class="flex gap-2 mt-2 no-print">
+                        <button type="button" class="btn btn-ghost flex-1" id="rcptEdit"><?= icon('edit', 'ic-sm') ?> Edit sale</button>
+                        <button type="submit" form="deleteSaleForm" class="btn btn-ghost flex-1 text-danger"><?= icon('trash', 'ic-sm') ?> Delete sale</button>
+                    </div>
                 </div>
             </div>
+        </div>
+
+
+        <form method="POST" action="index.php" id="deleteSaleForm" class="hidden" data-confirm="" data-confirm-action="Delete sale">
+            <?= csrfField() ?>
+            <input type="hidden" name="action" value="delete_sale">
+            <input type="hidden" name="id" id="delSaleId">
+        </form>
+
+        <!-- Edit sale -->
+        <div class="modal" id="editSaleModal" role="dialog" aria-modal="true" aria-labelledby="esTitle">
+            <form method="POST" action="index.php" class="modal-panel wide" id="editSaleForm">
+                <?= csrfField() ?>
+                <input type="hidden" name="action" value="update_sale">
+                <input type="hidden" name="id" id="esId">
+                <div class="p-6 sm:p-8">
+                    <div class="flex items-start justify-between gap-4">
+                        <div class="min-w-0">
+                            <h2 id="esTitle" class="text-xl font-bold"></h2>
+                            <p class="muted text-sm mt-0.5 truncate" id="esCustomer"></p>
+                        </div>
+                        <button type="button" class="icon-btn" data-close aria-label="Close"><?= icon('x', 'ic-sm') ?></button>
+                    </div>
+
+                    <div class="caption mt-6 mb-2">Items</div>
+                    <ul id="esItems" class="space-y-2"></ul>
+                    <p id="esEmpty" class="soft p-4 text-sm muted hidden">No items left. Add a product below, or close this and delete the sale instead.</p>
+                    <div class="flex gap-2 mt-3">
+                        <select id="esAddProduct" class="input flex-1 min-w-0" aria-label="Add a product">
+                            <option value="">Add a product…</option>
+                            <?php foreach ($allProducts as $p): ?>
+                                <option value="<?= (int)$p['id'] ?>"><?= e($p['name']) ?> · <?= money($p['unitPrice'] ?: $p['price']) ?> · <?= fmtQty($p['stockQuantity']) ?> <?= e($p['unit']) ?> left</option>
+                            <?php endforeach; ?>
+                        </select>
+                        <button type="button" class="btn btn-secondary" id="esAddBtn"><?= icon('plus', 'ic-sm') ?> Add</button>
+                    </div>
+
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-6">
+                        <div>
+                            <label class="label" for="esDiscount">Discount</label>
+                            <input type="number" step="0.01" min="0" name="discount_amount" id="esDiscount" class="input tnum" inputmode="decimal">
+                        </div>
+                        <div>
+                            <label class="label" for="esPaid">Amount paid</label>
+                            <input type="number" step="0.01" min="0" name="amount_paid" id="esPaid" class="input tnum" inputmode="decimal">
+                        </div>
+                        <div>
+                            <label class="label" for="esMethod">Payment method</label>
+                            <select name="payment_method" id="esMethod" class="input">
+                                <?php foreach ($PAYMENT_METHODS as $k => $label): ?><option value="<?= e($k) ?>"><?= e($label) ?></option><?php endforeach; ?>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="label" for="esNotes">Notes</label>
+                            <input type="text" name="notes" id="esNotes" class="input" maxlength="500">
+                        </div>
+                    </div>
+
+                    <dl class="soft p-4 mt-6 space-y-2 text-sm tnum" aria-live="polite">
+                        <div class="flex justify-between"><dt class="muted">Items</dt><dd id="esSub"></dd></div>
+                        <div class="flex justify-between text-base"><dt class="font-semibold">Total</dt><dd id="esTotal" class="font-extrabold"></dd></div>
+                        <div class="flex justify-between"><dt class="muted">Balance due</dt><dd id="esBal" class="font-semibold"></dd></div>
+                    </dl>
+                    <p class="hint">Stock is adjusted for any item changes. The customer's balance updates automatically.</p>
+
+                    <div class="flex flex-col-reverse sm:flex-row gap-2 mt-6">
+                        <button type="button" class="btn btn-secondary btn-lg sm:flex-1" data-close>Cancel</button>
+                        <button type="submit" class="btn btn-primary btn-lg sm:flex-1" id="esSave">Save changes</button>
+                    </div>
+                </div>
+            </form>
         </div>
 
         <script>
@@ -2061,8 +2095,76 @@ elseif ($tab === 'sales'):
                     .concat(['', 'Total: ' + fmt(o.total), 'Paid: ' + fmt(o.paid)]).concat(o.balance > 0.009 ? ['Balance due: ' + fmt(o.balance)] : []).concat(['', 'Thank you for your business!']);
                 const phone = (o.phone || '').replace(/\D/g, '').replace(/^0/, '233');
                 $('rcptWhatsapp').href = 'https://wa.me/' + phone + '?text=' + encodeURIComponent(lines.join('\n'));
+                $('rcptEdit').onclick = () => { closeModal($('receiptModal')); editSale(o); };
+                $('delSaleId').value = o.id;
+                $('deleteSaleForm').dataset.confirm = 'Delete sale #' + o.invoice + ' (' + fmt(o.total) + ')? Its items go back into stock'
+                    + (o.balance > 0.009 ? ' and ' + (o.customer || 'the customer') + ' will no longer owe ' + fmt(o.balance) : '') + '. This can\'t be undone.';
                 openModal('receiptModal');
             }
+            // ---- Edit sale ----
+            const products = <?= json_encode(array_map(fn($p) => ['id' => (int)$p['id'], 'name' => (string)$p['name'], 'unit' => (string)$p['unit'],
+                'price' => (float)($p['unitPrice'] ?: $p['price'])], $allProducts), JSON_HEX_TAG | JSON_HEX_AMP) ?>;
+            const num = v => { const n = parseFloat(v); return isFinite(n) && n > 0 ? n : 0; };
+            let rowSeq = 0;
+            function itemRow(it) {
+                const li = document.createElement('li');
+                const id = 'esi' + (++rowSeq);
+                li.className = 'soft p-3 grid gap-2 items-center es-item';
+                li.innerHTML = '<div class="min-w-0"><div class="font-medium truncate"></div><div class="text-xs muted"></div></div>'
+                    + '<input type="number" name="item_quantity[]" step="any" min="0.0001" required class="input tnum es-qty" inputmode="decimal">'
+                    + '<input type="number" name="item_price[]" step="0.01" min="0" required class="input tnum es-price" inputmode="decimal">'
+                    + '<button type="button" class="icon-btn es-remove"><?= icon('trash', 'ic-sm') ?></button>'
+                    + '<input type="hidden" name="item_product_id[]">';
+                li.querySelector('.font-medium').textContent = it.name;
+                li.querySelector('.text-xs').textContent = (it.unit ? 'Qty (' + it.unit + ')' : 'Qty') + ' · Price each';
+                const q = li.querySelector('.es-qty'), p = li.querySelector('.es-price');
+                q.id = id + 'q'; p.id = id + 'p';
+                q.value = Math.round(it.qty * 10000) / 10000; p.value = Number(it.price).toFixed(2);
+                q.setAttribute('aria-label', 'Quantity of ' + it.name); p.setAttribute('aria-label', 'Price of ' + it.name);
+                li.querySelector('input[type=hidden]').value = it.productId;
+                const rm = li.querySelector('.es-remove'); rm.setAttribute('aria-label', 'Remove ' + it.name);
+                rm.addEventListener('click', () => { li.remove(); recalc(); });
+                q.addEventListener('input', recalc); p.addEventListener('input', recalc);
+                return li;
+            }
+            function recalc() {
+                let sub = 0;
+                document.querySelectorAll('#esItems .es-item').forEach(li => sub += num(li.querySelector('.es-qty').value) * num(li.querySelector('.es-price').value));
+                const total = Math.max(0, sub - num($('esDiscount').value));
+                const paid = Math.min(num($('esPaid').value), total);
+                const bal = Math.max(0, total - paid);
+                $('esSub').textContent = fmt(sub);
+                $('esTotal').textContent = fmt(total);
+                $('esBal').textContent = bal > 0.009 ? fmt(bal) : 'Fully paid';
+                $('esBal').className = 'font-semibold ' + (bal > 0.009 ? 'text-danger' : 'text-success');
+                const hasItems = !!document.querySelector('#esItems .es-item');
+                $('esSave').disabled = !hasItems;
+                $('esEmpty').classList.toggle('hidden', hasItems);
+            }
+            function editSale(o) {
+                $('esId').value = o.id;
+                $('esTitle').textContent = 'Edit sale #' + o.invoice;
+                $('esCustomer').textContent = (o.customer || 'Walk-in customer') + ' · ' + o.date;
+                const list = $('esItems'); list.innerHTML = '';
+                o.items.forEach(it => list.appendChild(itemRow(it)));
+                $('esDiscount').value = o.discount ? o.discount.toFixed(2) : '';
+                $('esPaid').value = o.paid.toFixed(2);
+                $('esMethod').value = o.methodKey || 'CASH';
+                $('esNotes').value = o.notes || '';
+                $('esAddProduct').value = '';
+                recalc();
+                openModal('editSaleModal');
+            }
+            $('esAddBtn').addEventListener('click', () => {
+                const p = products.find(x => String(x.id) === $('esAddProduct').value);
+                if (!p) { $('esAddProduct').focus(); return; }
+                const existing = [...document.querySelectorAll('#esItems .es-item')].find(li => li.querySelector('input[type=hidden]').value === String(p.id));
+                if (existing) { const q = existing.querySelector('.es-qty'); q.value = num(q.value) + 1; q.focus(); }
+                else { const li = itemRow({ productId: p.id, name: p.name, unit: p.unit, qty: 1, price: p.price }); $('esItems').appendChild(li); li.querySelector('.es-qty').focus(); }
+                $('esAddProduct').value = '';
+                recalc();
+            });
+            ['esDiscount', 'esPaid'].forEach(id => $(id).addEventListener('input', recalc));
             document.querySelectorAll('#salesTable tr[data-order]').forEach(tr => {
                 const o = JSON.parse(tr.dataset.order);
                 tr.addEventListener('click', () => open(o));
@@ -2560,8 +2662,8 @@ elseif ($tab === 'payments'):
         <?php pageHeader('Payments', 'Money received from customers, including part-payments on credit sales.'); ?>
 
         <div class="grid grid-cols-2 gap-3 lg:gap-5 mb-6">
-            <div class="card card-pad"><div class="muted text-sm font-medium">This month</div><div class="kpi"><?= money($payMonth) ?></div></div>
-            <div class="card card-pad"><div class="muted text-sm font-medium">All time · <?= count($allPayments) ?> payments</div><div class="kpi"><?= money($payTotal) ?></div></div>
+            <div class="card card-pad kpi-card"><div class="muted text-sm font-medium">This month</div><div class="kpi"><?= kpiMoney($payMonth) ?></div></div>
+            <div class="card card-pad kpi-card"><div class="muted text-sm font-medium">All time · <?= count($allPayments) ?> payments</div><div class="kpi"><?= kpiMoney($payTotal) ?></div></div>
         </div>
 
         <div class="flex flex-col md:flex-row gap-3 mb-4" data-filters="paymentsTable">

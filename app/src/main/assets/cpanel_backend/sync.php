@@ -57,116 +57,20 @@ try {
     exit;
 }
 
-// Keep databases created by older versions compatible (adds missing columns once).
-$requiredColumns = [
-    'products' => [
-        'imageUrl' => "VARCHAR(512) NOT NULL DEFAULT ''",
-        'unitPrice' => "DECIMAL(12,2) NOT NULL DEFAULT 0.00",
-        'description' => "TEXT NULL",
-    ],
-    'customers' => [
-        'currentBalance' => "DECIMAL(12,2) NOT NULL DEFAULT 0.00",
-        'totalDebt' => "DECIMAL(12,2) NOT NULL DEFAULT 0.00",
-        'totalPurchases' => "DECIMAL(12,2) NOT NULL DEFAULT 0.00",
-        'totalPurchased' => "DECIMAL(12,2) NOT NULL DEFAULT 0.00",
-        'createdAt' => "BIGINT NOT NULL DEFAULT 0",
-    ],
-    'sales_orders' => [
-        'invoiceNumber' => "VARCHAR(100) NOT NULL DEFAULT ''",
-        'customerWhatsapp' => "VARCHAR(64) NOT NULL DEFAULT ''",
-        'balanceDue' => "DECIMAL(12,2) NOT NULL DEFAULT 0.00",
-        'debtAmount' => "DECIMAL(12,2) NOT NULL DEFAULT 0.00",
-        'discountAmount' => "DECIMAL(12,2) NOT NULL DEFAULT 0.00",
-        'smsSentCount' => "INT NOT NULL DEFAULT 0",
-        'lastSmsTimestamp' => "BIGINT NULL",
-    ],
-];
-foreach ($requiredColumns as $table => $columns) {
-    foreach ($columns as $col => $def) {
-        try {
-            if ($pdo->query("SHOW COLUMNS FROM `$table` LIKE '$col'")->rowCount() === 0) {
-                $pdo->exec("ALTER TABLE `$table` ADD COLUMN `$col` $def");
-            }
-        } catch (Exception $e) { /* table may not exist yet */ }
-    }
+// Shared schema, sync merge and photo code (upload biztrack_core.php next to this file).
+if (!file_exists(__DIR__ . '/biztrack_core.php')) {
+    http_response_code(500);
+    echo json_encode(['status' => 'error', 'message' => 'Server incomplete: upload biztrack_core.php next to sync.php.']);
+    exit;
 }
-
-// ----------------------------------------------------
-// PRODUCT PHOTOS (shared by sync.php and index.php; keep both copies in sync)
-// Photos live in ./uploads/products/ next to this file, named by content hash.
-// ----------------------------------------------------
-if (!function_exists('bt_store_product_image')) {
-    function bt_uploads_dir(): string {
-        $dir = __DIR__ . '/uploads/products';
-        if (!is_dir($dir)) @mkdir($dir, 0755, true);
-        // Never serve listings or run scripts from the uploads folder. (php_flag is avoided on
-        // purpose: it breaks the folder with a 500 error on PHP-FPM hosts.)
-        $ht = __DIR__ . '/uploads/.htaccess';
-        if (!file_exists($ht)) {
-            @file_put_contents($ht, "Options -Indexes\nRemoveHandler .php .phtml .php3 .php4 .php5 .php7 .php8 .phar\n"
-                . "<FilesMatch \"\\.(php[0-9]?|phtml|phar|pl|py|cgi|sh)$\">\n"
-                . "  <IfModule mod_authz_core.c>\n    Require all denied\n  </IfModule>\n"
-                . "  <IfModule !mod_authz_core.c>\n    Deny from all\n  </IfModule>\n</FilesMatch>\n");
-        }
-        if (!file_exists(__DIR__ . '/uploads/index.html')) @file_put_contents(__DIR__ . '/uploads/index.html', '');
-        if (!file_exists($dir . '/index.html')) @file_put_contents($dir . '/index.html', '');
-        return $dir;
-    }
-
-    /** Public URL of the uploads folder, e.g. https://example.com/biztrack/uploads/products */
-    function bt_uploads_base_url(): string {
-        $https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
-            || strtolower((string)($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '')) === 'https';
-        $host = preg_replace('/[^A-Za-z0-9.\-:\[\]]/', '', (string)($_SERVER['HTTP_HOST'] ?? 'localhost'));
-        $dir = rtrim(str_replace('\\', '/', dirname((string)($_SERVER['SCRIPT_NAME'] ?? '/'))), '/');
-        return ($https ? 'https' : 'http') . '://' . $host . $dir . '/uploads/products';
-    }
-
-    /**
-     * Validates and stores an uploaded image ($_FILES entry). Returns [url, null] or [null, error].
-     * Accepts JPEG, PNG and WebP up to 6 MB. With GD available the image is resized to at most
-     * 1024px and re-encoded as JPEG, which also strips anything embedded in the file.
-     */
-    function bt_store_product_image(array $file): array {
-        if (($file['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) return [null, 'Upload failed (code ' . (int)($file['error'] ?? -1) . ').'];
-        if (!is_uploaded_file($file['tmp_name'] ?? '')) return [null, 'Invalid upload.'];
-        if ((int)$file['size'] <= 0 || (int)$file['size'] > 6 * 1024 * 1024) return [null, 'Photo must be smaller than 6 MB.'];
-        $info = @getimagesize($file['tmp_name']);
-        $types = [IMAGETYPE_JPEG => 'jpg', IMAGETYPE_PNG => 'png'];
-        if (defined('IMAGETYPE_WEBP')) $types[IMAGETYPE_WEBP] = 'webp';
-        if (!$info || !isset($types[$info[2]])) return [null, 'Only JPEG, PNG or WebP photos are allowed.'];
-
-        $bytes = null;
-        $ext = $types[$info[2]];
-        if (function_exists('imagecreatefromstring') && function_exists('imagejpeg')) {
-            $src = @imagecreatefromstring((string)file_get_contents($file['tmp_name']));
-            if ($src) {
-                $w = imagesx($src); $h = imagesy($src);
-                $scale = min(1, 1024 / max($w, $h));
-                $nw = max(1, (int)round($w * $scale)); $nh = max(1, (int)round($h * $scale));
-                $dst = imagecreatetruecolor($nw, $nh);
-                imagefill($dst, 0, 0, imagecolorallocate($dst, 255, 255, 255)); // flatten transparency onto white
-                imagecopyresampled($dst, $src, 0, 0, 0, 0, $nw, $nh, $w, $h);
-                ob_start(); imagejpeg($dst, null, 85); $bytes = ob_get_clean();
-                $src = $dst = null; // GD images are freed automatically (imagedestroy is deprecated)
-                $ext = 'jpg';
-            }
-        }
-        if ($bytes === null) $bytes = (string)file_get_contents($file['tmp_name']);
-
-        $name = sha1($bytes) . '.' . $ext;
-        $path = bt_uploads_dir() . '/' . $name;
-        if (!file_exists($path) && @file_put_contents($path, $bytes, LOCK_EX) === false) return [null, 'Could not save the photo on the server.'];
-        return [bt_uploads_base_url() . '/' . $name, null];
-    }
-
-    /** Deletes a stored photo if no product uses it any more. */
-    function bt_forget_product_image(PDO $db, string $url): void {
-        if ($url === '' || !preg_match('#/uploads/products/([a-f0-9]{40}\.(?:jpg|png|webp))$#', $url, $m)) return;
-        $q = $db->prepare("SELECT COUNT(*) FROM products WHERE imageUrl = ?");
-        $q->execute([$url]);
-        if ((int)$q->fetchColumn() === 0) @unlink(bt_uploads_dir() . '/' . $m[1]);
-    }
+require_once __DIR__ . '/biztrack_core.php';
+try {
+    bt_ensure_schema($pdo);
+} catch (Exception $e) {
+    http_response_code(500);
+    error_log('BizTrack schema upgrade failed: ' . $e->getMessage());
+    echo json_encode(['status' => 'error', 'message' => 'Database upgrade failed. Check the server error log.']);
+    exit;
 }
 
 // ==========================================
@@ -265,34 +169,13 @@ if (strtoupper($action) === 'PULL') {
                 // Web address of the photo. Older app versions read imageUri, newer ones remoteImageUrl.
                 'imageUri'          => (string)($p['imageUrl'] ?? ''),
                 'remoteImageUrl'    => (string)($p['imageUrl'] ?? ''),
-                'lastRestockedAt'   => (int)($p['lastRestockedAt'] ?? round(microtime(true) * 1000))
+                'lastRestockedAt'   => (int)($p['lastRestockedAt'] ?? 0),
+                'updatedAt'         => (int)($p['updatedAt'] ?? 0)
             ];
         }
 
         $formattedCustomers = [];
         foreach ($customers as $c) {
-            $debt = 0.0;
-            if (isset($c['currentBalance']) && (float)$c['currentBalance'] > 0.001) {
-                $debt = (float)$c['currentBalance'];
-            } elseif (isset($c['totalDebt']) && (float)$c['totalDebt'] > 0.001) {
-                $debt = (float)$c['totalDebt'];
-            } elseif (isset($c['currentBalance'])) {
-                $debt = (float)$c['currentBalance'];
-            } else {
-                $debt = (float)($c['totalDebt'] ?? 0.0);
-            }
-
-            $purchases = 0.0;
-            if (isset($c['totalPurchases']) && (float)$c['totalPurchases'] > 0.001) {
-                $purchases = (float)$c['totalPurchases'];
-            } elseif (isset($c['totalPurchased']) && (float)$c['totalPurchased'] > 0.001) {
-                $purchases = (float)$c['totalPurchased'];
-            } elseif (isset($c['totalPurchases'])) {
-                $purchases = (float)$c['totalPurchases'];
-            } else {
-                $purchases = (float)($c['totalPurchased'] ?? 0.0);
-            }
-
             $formattedCustomers[] = [
                 'id'             => (int)$c['id'],
                 'name'           => (string)($c['name'] ?? 'Customer'),
@@ -300,10 +183,13 @@ if (strtoupper($action) === 'PULL') {
                 'whatsapp'       => (string)($c['whatsapp'] ?? ''),
                 'address'        => (string)($c['address'] ?? ''),
                 'notes'          => (string)($c['notes'] ?? ''),
-                'totalPurchases' => $purchases,
+                'totalPurchases' => (float)($c['totalPurchases'] ?? 0.0),
                 'totalPaid'      => (float)($c['totalPaid'] ?? 0.0),
-                'currentBalance' => $debt,
-                'createdAt'      => (int)($c['createdAt'] ?? $c['lastTransactionDate'] ?? round(microtime(true) * 1000))
+                'currentBalance' => (float)($c['currentBalance'] ?? 0.0),
+                'openingBalance' => (float)($c['openingBalance'] ?? 0.0),
+                'openingPurchases' => (float)($c['openingPurchases'] ?? 0.0),
+                'createdAt'      => (int)($c['createdAt'] ?: ($c['lastTransactionDate'] ?? 0)),
+                'updatedAt'      => (int)($c['updatedAt'] ?? 0)
             ];
         }
 
@@ -326,7 +212,8 @@ if (strtoupper($action) === 'PULL') {
                 'notes'            => (string)($s['notes'] ?? ''),
                 'timestamp'        => (int)($s['timestamp'] ?? round(microtime(true) * 1000)),
                 'smsSentCount'     => (int)($s['smsSentCount'] ?? 0),
-                'lastSmsTimestamp' => ($s['lastSmsTimestamp'] !== null && $s['lastSmsTimestamp'] > 0) ? (int)$s['lastSmsTimestamp'] : null
+                'lastSmsTimestamp' => ($s['lastSmsTimestamp'] !== null && $s['lastSmsTimestamp'] > 0) ? (int)$s['lastSmsTimestamp'] : null,
+                'updatedAt'        => (int)($s['updatedAt'] ?? 0)
             ];
         }
 
@@ -341,7 +228,8 @@ if (strtoupper($action) === 'PULL') {
                 'paymentMethod'       => (string)($pm['paymentMethod'] ?? 'CASH'),
                 'notes'               => (string)($pm['notes'] ?? ''),
                 'timestamp'           => (int)($pm['timestamp'] ?? round(microtime(true) * 1000)),
-                'balanceAfterPayment' => (float)($pm['balanceAfterPayment'] ?? 0.0)
+                'balanceAfterPayment' => (float)($pm['balanceAfterPayment'] ?? 0.0),
+                'updatedAt'           => (int)($pm['updatedAt'] ?? 0)
             ];
         }
 
@@ -360,6 +248,11 @@ if (strtoupper($action) === 'PULL') {
             ];
         }
 
+        $formattedDeleted = [];
+        foreach ($pdo->query("SELECT tableName, recordId, deletedAt FROM deleted_records") as $d) {
+            $formattedDeleted[] = ['tableName' => $d['tableName'], 'recordId' => (int)$d['recordId'], 'deletedAt' => (int)$d['deletedAt']];
+        }
+
         $appSettings = [
             'id'                  => 1,
             'businessName'        => (string)($settingsRow['businessName'] ?? 'BizTrack Business'),
@@ -368,7 +261,7 @@ if (strtoupper($action) === 'PULL') {
             'businessLocation'    => (string)($settingsRow['businessLocation'] ?? 'Ghana'),
             'momoPaymentDetails'  => (string)($settingsRow['momoPaymentDetails'] ?? 'MTN MoMo: 0244XXXXXX (BizTrack)'),
             'smsApiKey'           => '', // secrets are never sent back to devices
-            'smsSenderId'         => (string)($settingsRow['smsSenderId'] ?? 'BizTrack'),
+            'smsSenderId'         => '', // SMS options belong to the phone; blank keeps its own
             'smsAutoSendOnSale'   => isset($settingsRow['smsAutoSendOnSale']) ? (bool)$settingsRow['smsAutoSendOnSale'] : true,
             'smsAutoSendOnPayment'=> isset($settingsRow['smsAutoSendOnPayment']) ? (bool)$settingsRow['smsAutoSendOnPayment'] : true,
             'currencySymbol'      => (string)($settingsRow['currencySymbol'] ?? 'GH₵'),
@@ -376,7 +269,8 @@ if (strtoupper($action) === 'PULL') {
             'cloudSyncSecretKey'  => '',
             'cloudAutoSyncOnSale' => isset($settingsRow['cloudAutoSyncOnSale']) ? (bool)$settingsRow['cloudAutoSyncOnSale'] : false,
             'lastCloudSyncTime'   => (int)($settingsRow['lastCloudSyncTime'] ?? 0),
-            'lastCloudSyncStatus' => (string)($settingsRow['lastCloudSyncStatus'] ?? 'Synced')
+            'lastCloudSyncStatus' => (string)($settingsRow['lastCloudSyncStatus'] ?? 'Synced'),
+            'updatedAt'           => (int)($settingsRow['updatedAt'] ?? 0)
         ];
 
         echo json_encode([
@@ -395,6 +289,7 @@ if (strtoupper($action) === 'PULL') {
                 'payments'      => $formattedPayments,
                 'inventoryLogs' => $formattedLogs,
                 'settings'      => $appSettings,
+                'deletedRecords' => $formattedDeleted,
                 'summary'       => [
                     'totalProducts'          => count($formattedProducts),
                     'totalCustomers'         => count($formattedCustomers),
@@ -415,256 +310,25 @@ if (strtoupper($action) === 'PULL') {
 }
 
 // ----------------------------------------------------
-// PUSH: Sync Android Phone Data -> MySQL (Upsert)
+// PUSH: merge the phone's records (newer edits win, stock via logs, deletions kept)
 // ----------------------------------------------------
 $backup = $data['backupData'] ?? null;
-if (!$backup) {
+if (!is_array($backup)) {
     http_response_code(400);
     echo json_encode(['status' => 'error', 'message' => 'Missing backupData payload in push request.']);
     exit;
 }
 
-$removedPhotos = [];
 try {
-    $pdo->beginTransaction();
-
-    // 1. Sync Products
-    if (!empty($backup['products'])) {
-        // price and unitPrice are both kept (the web dashboard reads unitPrice).
-        // imageUrl: a web address replaces the server's photo, "none" means the user removed
-        // it, and blank (not uploaded yet / older app) leaves the server's photo untouched.
-        $stmt = $pdo->prepare("
-            INSERT INTO products (id, name, category, price, unitPrice, costPrice, stockQuantity, unit, minStockThreshold, description, imageUrl, lastRestockedAt)
-            VALUES (:id, :name, :category, :price, :unitPrice, :costPrice, :stockQuantity, :unit, :minStockThreshold, :description, :imageUrl, :lastRestockedAt)
-            ON DUPLICATE KEY UPDATE
-                name = VALUES(name),
-                category = VALUES(category),
-                price = VALUES(price),
-                unitPrice = VALUES(unitPrice),
-                costPrice = VALUES(costPrice),
-                stockQuantity = VALUES(stockQuantity),
-                unit = VALUES(unit),
-                minStockThreshold = VALUES(minStockThreshold),
-                description = VALUES(description),
-                imageUrl = IF(:imageAction = 'keep', imageUrl, VALUES(imageUrl)),
-                lastRestockedAt = VALUES(lastRestockedAt)
-        ");
-        $oldUrls = [];
-        foreach ($pdo->query("SELECT id, imageUrl FROM products")->fetchAll() as $row) $oldUrls[(int)$row['id']] = (string)$row['imageUrl'];
-        foreach ($backup['products'] as $p) {
-            $remote = trim((string)($p['remoteImageUrl'] ?? ''));
-            if ($remote === 'none') { $imageAction = 'clear'; $imageUrl = ''; }
-            elseif (preg_match('#^https?://#i', $remote)) { $imageAction = 'set'; $imageUrl = substr($remote, 0, 512); }
-            else { $imageAction = 'keep'; $imageUrl = ''; }
-            $price = $p['unitPrice'] ?? $p['price'] ?? 0.0;
-            $stmt->execute([
-                ':id'                => $p['id'],
-                ':name'              => $p['name'],
-                ':category'          => $p['category'] ?? 'GENERAL',
-                ':price'             => $price,
-                ':unitPrice'         => $price,
-                ':costPrice'         => $p['costPrice'] ?? 0.0,
-                ':stockQuantity'     => $p['stockQuantity'] ?? 0.0,
-                ':unit'              => $p['unit'] ?? 'Piece',
-                ':minStockThreshold' => $p['minStockThreshold'] ?? 5.0,
-                ':description'       => (string)($p['description'] ?? ''),
-                ':imageUrl'          => $imageUrl,
-                ':imageAction'       => $imageAction,
-                ':lastRestockedAt'   => $p['lastRestockedAt'] ?? round(microtime(true) * 1000)
-            ]);
-            $prev = $oldUrls[(int)$p['id']] ?? '';
-            if ($imageAction !== 'keep' && $prev !== '' && $prev !== $imageUrl) $removedPhotos[] = $prev;
-        }
-    }
-
-    // 2. Sync Customers. Older and newer column names are both written: the web dashboard
-    // reads currentBalance / totalPurchases, older code reads totalDebt / totalPurchased.
-    if (!empty($backup['customers'])) {
-        $stmt = $pdo->prepare("
-            INSERT INTO customers (id, name, phone, whatsapp, address, notes, totalDebt, currentBalance, totalPurchased, totalPurchases, totalPaid, createdAt, lastTransactionDate)
-            VALUES (:id, :name, :phone, :whatsapp, :address, :notes, :totalDebt, :currentBalance, :totalPurchased, :totalPurchases, :totalPaid, :createdAt, :lastTransactionDate)
-            ON DUPLICATE KEY UPDATE
-                name = VALUES(name),
-                phone = VALUES(phone),
-                whatsapp = VALUES(whatsapp),
-                address = VALUES(address),
-                notes = VALUES(notes),
-                totalDebt = VALUES(totalDebt),
-                currentBalance = VALUES(currentBalance),
-                totalPurchased = VALUES(totalPurchased),
-                totalPurchases = VALUES(totalPurchases),
-                totalPaid = VALUES(totalPaid),
-                lastTransactionDate = VALUES(lastTransactionDate)
-        ");
-        foreach ($backup['customers'] as $c) {
-            $balance = (float)($c['currentBalance'] ?? $c['totalDebt'] ?? 0.0);
-            $purchases = (float)($c['totalPurchases'] ?? $c['totalPurchased'] ?? 0.0);
-            $created = $c['createdAt'] ?? $c['lastTransactionDate'] ?? round(microtime(true) * 1000);
-            $stmt->execute([
-                ':id'                  => $c['id'],
-                ':name'                => $c['name'],
-                ':phone'               => $c['phone'] ?? '',
-                ':whatsapp'            => $c['whatsapp'] ?? '',
-                ':address'             => $c['address'] ?? '',
-                ':notes'               => $c['notes'] ?? '',
-                ':totalDebt'           => $balance,
-                ':currentBalance'      => $balance,
-                ':totalPurchased'      => $purchases,
-                ':totalPurchases'      => $purchases,
-                ':totalPaid'           => $c['totalPaid'] ?? 0.0,
-                ':createdAt'           => $created,
-                ':lastTransactionDate' => $created
-            ]);
-        }
-    }
-
-    // 3. Sync Sales Orders. balanceDue (read by the dashboard) and debtAmount (older code)
-    // are both written, and the app's invoice number is kept.
-    if (!empty($backup['salesOrders'])) {
-        $stmt = $pdo->prepare("
-            INSERT INTO sales_orders (id, invoiceNumber, customerId, customerName, customerPhone, customerWhatsapp, itemsJson, totalAmount, amountPaid, debtAmount, balanceDue, discountAmount, paymentStatus, paymentMethod, notes, timestamp, smsSentCount, lastSmsTimestamp)
-            VALUES (:id, :invoiceNumber, :customerId, :customerName, :customerPhone, :customerWhatsapp, :itemsJson, :totalAmount, :amountPaid, :debtAmount, :balanceDue, :discountAmount, :paymentStatus, :paymentMethod, :notes, :timestamp, :smsSentCount, :lastSmsTimestamp)
-            ON DUPLICATE KEY UPDATE
-                invoiceNumber = IF(VALUES(invoiceNumber) = '', invoiceNumber, VALUES(invoiceNumber)),
-                customerName = VALUES(customerName),
-                customerPhone = VALUES(customerPhone),
-                customerWhatsapp = VALUES(customerWhatsapp),
-                itemsJson = VALUES(itemsJson),
-                totalAmount = VALUES(totalAmount),
-                amountPaid = VALUES(amountPaid),
-                debtAmount = VALUES(debtAmount),
-                balanceDue = VALUES(balanceDue),
-                discountAmount = VALUES(discountAmount),
-                paymentStatus = VALUES(paymentStatus),
-                paymentMethod = VALUES(paymentMethod),
-                notes = VALUES(notes),
-                smsSentCount = VALUES(smsSentCount),
-                lastSmsTimestamp = VALUES(lastSmsTimestamp)
-        ");
-        foreach ($backup['salesOrders'] as $s) {
-            $due = (float)($s['balanceDue'] ?? $s['debtAmount'] ?? 0.0);
-            $stmt->execute([
-                ':id'               => $s['id'],
-                ':invoiceNumber'    => trim((string)($s['invoiceNumber'] ?? '')) ?: ('INV-' . $s['id']), // never blank (column may be UNIQUE)
-                ':customerId'       => $s['customerId'] ?? null,
-                ':customerName'     => $s['customerName'],
-                ':customerPhone'    => $s['customerPhone'] ?? '',
-                ':customerWhatsapp' => $s['customerWhatsapp'] ?? '',
-                ':itemsJson'        => $s['itemsJson'],
-                ':totalAmount'      => (float)($s['totalAmount'] ?? 0.0),
-                ':amountPaid'       => (float)($s['amountPaid'] ?? 0.0),
-                ':debtAmount'       => $due,
-                ':balanceDue'       => $due,
-                ':discountAmount'   => (float)($s['discountAmount'] ?? 0.0),
-                ':paymentStatus'    => $s['paymentStatus'] ?? 'PAID',
-                ':paymentMethod'    => $s['paymentMethod'] ?? 'CASH',
-                ':notes'            => $s['notes'] ?? '',
-                ':timestamp'        => $s['timestamp'] ?? round(microtime(true) * 1000),
-                ':smsSentCount'     => (int)($s['smsSentCount'] ?? 0),
-                ':lastSmsTimestamp' => $s['lastSmsTimestamp'] ?? null
-            ]);
-        }
-    }
-
-    // 4. Sync Payments
-    if (!empty($backup['payments'])) {
-        $stmt = $pdo->prepare("
-            INSERT INTO payments (id, customerId, customerName, saleOrderId, amount, paymentMethod, notes, timestamp, balanceAfterPayment)
-            VALUES (:id, :customerId, :customerName, :saleOrderId, :amount, :paymentMethod, :notes, :timestamp, :balanceAfterPayment)
-            ON DUPLICATE KEY UPDATE
-                amount = VALUES(amount),
-                paymentMethod = VALUES(paymentMethod),
-                notes = VALUES(notes),
-                balanceAfterPayment = VALUES(balanceAfterPayment)
-        ");
-        foreach ($backup['payments'] as $pm) {
-            $stmt->execute([
-                ':id'                  => $pm['id'],
-                ':customerId'          => $pm['customerId'],
-                ':customerName'        => $pm['customerName'],
-                ':saleOrderId'         => $pm['saleOrderId'] ?? null,
-                ':amount'              => $pm['amount'] ?? 0.0,
-                ':paymentMethod'       => $pm['paymentMethod'] ?? 'CASH',
-                ':notes'               => $pm['notes'] ?? '',
-                ':timestamp'           => $pm['timestamp'] ?? round(microtime(true) * 1000),
-                ':balanceAfterPayment' => $pm['balanceAfterPayment'] ?? 0.0
-            ]);
-        }
-    }
-
-    // 5. Sync Inventory Logs
-    if (!empty($backup['inventoryLogs'])) {
-        $stmt = $pdo->prepare("
-            INSERT INTO inventory_logs (id, productId, productName, changeType, quantityChanged, quantityAfter, unit, notes, timestamp)
-            VALUES (:id, :productId, :productName, :changeType, :quantityChanged, :quantityAfter, :unit, :notes, :timestamp)
-            ON DUPLICATE KEY UPDATE
-                productName = VALUES(productName),
-                changeType = VALUES(changeType),
-                quantityChanged = VALUES(quantityChanged),
-                quantityAfter = VALUES(quantityAfter),
-                notes = VALUES(notes)
-        ");
-        foreach ($backup['inventoryLogs'] as $l) {
-            $stmt->execute([
-                ':id'              => $l['id'],
-                ':productId'       => $l['productId'],
-                ':productName'     => $l['productName'],
-                ':changeType'      => $l['changeType'],
-                ':quantityChanged' => $l['quantityChanged'] ?? 0.0,
-                ':quantityAfter'   => $l['quantityAfter'] ?? 0.0,
-                ':unit'            => $l['unit'] ?? 'unit',
-                ':notes'           => $l['notes'] ?? '',
-                ':timestamp'       => $l['timestamp'] ?? round(microtime(true) * 1000)
-            ]);
-        }
-    }
-
-    // 6. Sync Business Profile / Settings
-    if (!empty($backup['settings'])) {
-        $st = $backup['settings'];
-        $stmt = $pdo->prepare("
-            INSERT INTO app_settings (id, businessName, businessTagline, businessPhone, businessLocation, momoPaymentDetails, smsApiKey, smsSenderId, currencySymbol)
-            VALUES (1, :businessName, :businessTagline, :businessPhone, :businessLocation, :momoPaymentDetails, :smsApiKey, :smsSenderId, :currencySymbol)
-            ON DUPLICATE KEY UPDATE
-                businessName = VALUES(businessName),
-                businessTagline = VALUES(businessTagline),
-                businessPhone = VALUES(businessPhone),
-                businessLocation = VALUES(businessLocation),
-                momoPaymentDetails = VALUES(momoPaymentDetails),
-                smsApiKey = VALUES(smsApiKey),
-                smsSenderId = VALUES(smsSenderId),
-                currencySymbol = VALUES(currencySymbol)
-        ");
-        $stmt->execute([
-            ':businessName'        => $st['businessName'] ?? 'BizTrack Business',
-            ':businessTagline'     => $st['businessTagline'] ?? '',
-            ':businessPhone'       => $st['businessPhone'] ?? '',
-            ':businessLocation'    => $st['businessLocation'] ?? '',
-            ':momoPaymentDetails'  => $st['momoPaymentDetails'] ?? '',
-            ':smsApiKey'           => $st['smsApiKey'] ?? '',
-            ':smsSenderId'         => $st['smsSenderId'] ?? 'BizTrack',
-            ':currencySymbol'      => $st['currencySymbol'] ?? 'GH₵'
-        ]);
-    }
-
-    $pdo->commit();
-
-    // Delete photo files that no product uses any more.
-    foreach (array_unique($removedPhotos) as $u) bt_forget_product_image($pdo, $u);
-
+    $stats = bt_merge_backup($pdo, $backup);
     echo json_encode([
         'status'          => 'success',
-        'message'         => 'Cloud MySQL database successfully updated with your latest records.',
-        'serverTimestamp' => round(microtime(true) * 1000)
+        'message'         => 'Cloud database is up to date with your latest records.',
+        'serverTimestamp' => bt_now_ms(),
+        'merged'          => $stats
     ]);
-} catch (Exception $e) {
-    if ($pdo->inTransaction()) {
-        $pdo->rollBack();
-    }
+} catch (Throwable $e) {
     http_response_code(500);
-    echo json_encode([
-        'status'  => 'error',
-        'message' => 'Sync failed: ' . $e->getMessage()
-    ]);
+    error_log('BizTrack sync push failed: ' . $e->getMessage());
+    echo json_encode(['status' => 'error', 'message' => 'Sync failed: ' . $e->getMessage()]);
 }
-?>

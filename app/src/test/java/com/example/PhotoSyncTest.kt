@@ -51,13 +51,13 @@ class PhotoSyncTest {
 
         DatabaseBackupHelper.restoreDatabase(db, BackupData(products = listOf(
             // New server: photo address in remoteImageUrl, nothing usable in imageUri.
-            ProductEntity(id = 1, name = "Croissant", category = "Pastries", unit = "Piece", unitPrice = 14.0,
+            ProductEntity(id = 1, name = "Croissant", category = "Pastries", unit = "Piece", unitPrice = 14.0, updatedAt = System.currentTimeMillis(),
                 imageUri = "https://shop.example/uploads/products/a.jpg", remoteImageUrl = "https://shop.example/uploads/products/a.jpg"),
             // Older server format: address only in imageUri.
             ProductEntity(id = 2, name = "Water", category = "FOOD_DRINKS", unit = "Bottle", unitPrice = 3.5,
                 imageUri = "https://shop.example/uploads/products/b.jpg"),
             // Server has no photo; local file is gone too: keep the known web copy.
-            ProductEntity(id = 3, name = "Old", category = "GENERAL", unit = "Piece", unitPrice = 1.0, imageUri = "")
+            ProductEntity(id = 3, name = "Old", category = "GENERAL", unit = "Piece", unitPrice = 1.0, imageUri = "", updatedAt = System.currentTimeMillis())
         )))
 
         val byId = db.productDao().getAllProductsDirect().associateBy { it.id }

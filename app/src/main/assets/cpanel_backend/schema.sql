@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS `products` (
   `imageUri` VARCHAR(512) NOT NULL DEFAULT '',
   `imageUrl` VARCHAR(512) NOT NULL DEFAULT '', -- public URL of the uploaded product photo
   `lastRestockedAt` BIGINT NOT NULL DEFAULT 0,
+  `updatedAt` BIGINT NOT NULL DEFAULT 0, -- last edit (ms); the newer edit wins when phones sync
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -37,8 +38,11 @@ CREATE TABLE IF NOT EXISTS `customers` (
   `totalPurchased` DECIMAL(12,2) NOT NULL DEFAULT 0.00,
   `totalPurchases` DECIMAL(12,2) NOT NULL DEFAULT 0.00,
   `totalPaid` DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  `openingBalance` DECIMAL(12,2) NOT NULL DEFAULT 0.00,   -- owed from before BizTrack; balance = this + unpaid sales
+  `openingPurchases` DECIMAL(12,2) NOT NULL DEFAULT 0.00,
   `lastTransactionDate` BIGINT NOT NULL DEFAULT 0,
   `createdAt` BIGINT NOT NULL DEFAULT 0,
+  `updatedAt` BIGINT NOT NULL DEFAULT 0, -- last edit (ms); the newer edit wins when phones sync
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -62,6 +66,7 @@ CREATE TABLE IF NOT EXISTS `sales_orders` (
   `timestamp` BIGINT NOT NULL DEFAULT 0,
   `smsSentCount` INT NOT NULL DEFAULT 0,
   `lastSmsTimestamp` BIGINT NULL,
+  `updatedAt` BIGINT NOT NULL DEFAULT 0, -- last edit (ms); the newer edit wins when phones sync
   PRIMARY KEY (`id`),
   KEY `idx_customer_id` (`customerId`),
   KEY `idx_timestamp` (`timestamp`)
@@ -78,6 +83,7 @@ CREATE TABLE IF NOT EXISTS `payments` (
   `notes` TEXT,
   `timestamp` BIGINT NOT NULL DEFAULT 0,
   `balanceAfterPayment` DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  `updatedAt` BIGINT NOT NULL DEFAULT 0, -- last edit (ms); the newer edit wins when phones sync
   PRIMARY KEY (`id`),
   KEY `idx_payment_customer` (`customerId`),
   KEY `idx_payment_time` (`timestamp`)
@@ -109,7 +115,24 @@ CREATE TABLE IF NOT EXISTS `app_settings` (
   `smsApiKey` VARCHAR(255) NOT NULL DEFAULT '',
   `smsSenderId` VARCHAR(64) NOT NULL DEFAULT 'BizTrack',
   `currencySymbol` VARCHAR(16) NOT NULL DEFAULT 'GH₵',
+  `updatedAt` BIGINT NOT NULL DEFAULT 0, -- last edit (ms); the newer edit wins when phones sync
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 7. Deleted records, so a deletion on one device reaches the others instead of being synced back
+CREATE TABLE IF NOT EXISTS `deleted_records` (
+  `tableName` VARCHAR(32) NOT NULL,
+  `recordId` BIGINT UNSIGNED NOT NULL,
+  `deletedAt` BIGINT NOT NULL,
+  PRIMARY KEY (`tableName`, `recordId`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 8. Schema version (biztrack_core.php upgrades older databases automatically)
+CREATE TABLE IF NOT EXISTS `sync_meta` (
+  `k` VARCHAR(64) NOT NULL,
+  `v` VARCHAR(255) NOT NULL,
+  PRIMARY KEY (`k`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+INSERT IGNORE INTO `sync_meta` (`k`, `v`) VALUES ('schema_version', '4');
 
 SET FOREIGN_KEY_CHECKS = 1;

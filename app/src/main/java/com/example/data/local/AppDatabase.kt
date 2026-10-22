@@ -20,14 +20,16 @@ import java.io.File
         CustomerEntity::class,
         SaleOrderEntity::class,
         PaymentEntity::class,
-        AppSettingsEntity::class
+        AppSettingsEntity::class,
+        DeletedRecordEntity::class
     ],
-    version = 7,
+    version = 8,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun productDao(): ProductDao
     abstract fun inventoryLogDao(): InventoryLogDao
+    abstract fun deletedRecordDao(): DeletedRecordDao
     abstract fun customerDao(): CustomerDao
     abstract fun saleOrderDao(): SaleOrderDao
     abstract fun paymentDao(): PaymentDao
@@ -103,6 +105,26 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        // v8: two-way sync. Per-record change times, deletion records, and opening balances
+        // so customer totals can be derived from sales (see CustomerEntity).
+        val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                for (table in listOf("products", "customers", "sales_orders", "payments", "app_settings")) {
+                    safeExec(db, "ALTER TABLE $table ADD COLUMN updatedAt INTEGER NOT NULL DEFAULT 0")
+                }
+                safeExec(db, "ALTER TABLE customers ADD COLUMN openingBalance REAL NOT NULL DEFAULT 0")
+                safeExec(db, "ALTER TABLE customers ADD COLUMN openingPurchases REAL NOT NULL DEFAULT 0")
+                safeExec(db, "CREATE TABLE IF NOT EXISTS deleted_records (tableName TEXT NOT NULL, recordId INTEGER NOT NULL, deletedAt INTEGER NOT NULL, PRIMARY KEY(tableName, recordId))")
+                // Whatever today's balance doesn't get from sales becomes the opening amount,
+                // so every balance stays exactly the same after the upgrade.
+                safeExec(db, """
+                    UPDATE customers SET
+                        openingBalance = currentBalance - COALESCE((SELECT SUM(s.balanceDue) FROM sales_orders s WHERE s.customerId = customers.id), 0),
+                        openingPurchases = totalPurchases - COALESCE((SELECT SUM(s.totalAmount) FROM sales_orders s WHERE s.customerId = customers.id), 0)
+                """.trimIndent())
+            }
+        }
+
         val MIGRATION_1_6 = object : Migration(1, 6) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 MIGRATION_1_2.migrate(db)
@@ -146,7 +168,7 @@ abstract class AppDatabase : RoomDatabase() {
                     "naadriel_farm_db"
                 )
                 .addMigrations(
-                    MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7,
+                    MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8,
                     MIGRATION_1_6, MIGRATION_2_6, MIGRATION_3_6, MIGRATION_4_6
                 )
                 .addCallback(DatabaseCallback(appContext))

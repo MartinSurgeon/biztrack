@@ -17,17 +17,81 @@ class FarmRepository(
     private val saleOrderDao: SaleOrderDao,
     private val paymentDao: PaymentDao,
     private val appSettingsDao: AppSettingsDao,
-    private val inventoryLogDao: InventoryLogDao? = null
+    private val inventoryLogDao: InventoryLogDao? = null,
+    private val deletedRecordDao: DeletedRecordDao? = null
 ) {
+    /*
+     * Sync rules (see DatabaseBackupHelper.mergeBackup and biztrack_core.php):
+     * - every insert/edit stamps updatedAt, so the newer version wins on the other side;
+     * - every stock change is an inventory log, applied once on the other side;
+     * - customer totals are derived from sales (recalculateCustomers);
+     * - deletes leave a DeletedRecord so the other side deletes too.
+     */
+    private fun now() = System.currentTimeMillis()
+
+    private suspend fun recordDeletion(table: String, id: Long) {
+        deletedRecordDao?.insert(DeletedRecordEntity(table, id, now()))
+    }
+
+    /** Re-derives every customer's balance, purchases and paid amount from their sales. */
+    suspend fun recalculateCustomers() {
+        customerDao.recalculateBalances()
+        customerDao.recalculatePaid()
+    }
+
     // Products & Inventory
     val allProducts: Flow<List<ProductEntity>> = productDao.getAllProducts()
     val inStockProducts: Flow<List<ProductEntity>> = productDao.getInStockProducts()
     val lowStockProducts: Flow<List<ProductEntity>> = productDao.getLowStockProducts()
 
-    suspend fun insertProduct(product: ProductEntity): Long =
-        productDao.insertProduct(if (product.id == 0L) product.copy(id = RecordIds.next(RecordIds.PRODUCTS)) else product)
-    suspend fun updateProduct(product: ProductEntity) = productDao.updateProduct(product)
-    suspend fun deleteProduct(product: ProductEntity) = productDao.deleteProduct(product)
+    /** New product; its opening stock is logged so the other side counts it exactly once. */
+    suspend fun insertProduct(product: ProductEntity): Long {
+        val p = product.copy(
+            id = if (product.id == 0L) RecordIds.next(RecordIds.PRODUCTS) else product.id,
+            updatedAt = now()
+        )
+        val id = productDao.insertProduct(p)
+        if (p.stockQuantity != 0.0) logStock(p.copy(id = id), p.stockQuantity, p.stockQuantity, "RESTOCK", "Opening stock")
+        return id
+    }
+
+    /**
+     * Saves product details. A changed stock number is applied as an ADJUSTMENT log (a
+     * difference), never by overwriting, so it merges with sales made elsewhere.
+     */
+    suspend fun updateProduct(product: ProductEntity) {
+        val stored = productDao.getProductById(product.id)
+        if (stored == null) {
+            insertProduct(product)
+            return
+        }
+        productDao.updateProduct(product.copy(stockQuantity = stored.stockQuantity, updatedAt = now()))
+        val delta = product.stockQuantity - stored.stockQuantity
+        if (kotlin.math.abs(delta) > 1e-9) {
+            adjustProductStock(product.id, delta, "ADJUSTMENT", "Stock set to ${product.stockQuantity}")
+        }
+    }
+
+    suspend fun deleteProduct(product: ProductEntity) {
+        productDao.deleteProduct(product)
+        recordDeletion(RecordIds.PRODUCTS, product.id)
+    }
+
+    private suspend fun logStock(product: ProductEntity, change: Double, after: Double, type: String, notes: String) {
+        inventoryLogDao?.insertLog(
+            InventoryLogEntity(
+                id = RecordIds.next(RecordIds.INVENTORY_LOGS),
+                productId = product.id,
+                productName = product.name,
+                changeType = type,
+                quantityChanged = change,
+                quantityAfter = after,
+                unit = product.unit,
+                notes = notes
+            )
+        )
+    }
+
     suspend fun adjustProductStock(productId: Long, quantityChange: Double, logType: String = "ADJUSTMENT", notes: String = "") {
         productDao.adjustStock(productId, quantityChange)
         val product = productDao.getProductById(productId)
@@ -56,10 +120,28 @@ class FarmRepository(
     val totalOutstandingDebt: Flow<Double?> = customerDao.getTotalOutstandingDebt()
 
     suspend fun getCustomerById(id: Long): CustomerEntity? = customerDao.getCustomerById(id)
-    suspend fun insertCustomer(customer: CustomerEntity): Long =
-        customerDao.insertCustomer(if (customer.id == 0L) customer.copy(id = RecordIds.next(RecordIds.CUSTOMERS)) else customer)
-    suspend fun updateCustomer(customer: CustomerEntity) = customerDao.updateCustomer(customer)
-    suspend fun deleteCustomer(customer: CustomerEntity) = customerDao.deleteCustomer(customer)
+    /** New customer. Any starting balance/purchases (no sales yet) become their opening amounts. */
+    suspend fun insertCustomer(customer: CustomerEntity): Long {
+        val c = customer.copy(
+            id = if (customer.id == 0L) RecordIds.next(RecordIds.CUSTOMERS) else customer.id,
+            openingBalance = customer.openingBalance.takeIf { it != 0.0 } ?: customer.currentBalance,
+            openingPurchases = customer.openingPurchases.takeIf { it != 0.0 } ?: customer.totalPurchases,
+            updatedAt = now()
+        )
+        val id = customerDao.insertCustomer(c)
+        recalculateCustomers()
+        return id
+    }
+
+    suspend fun updateCustomer(customer: CustomerEntity) {
+        customerDao.updateCustomer(customer.copy(updatedAt = now()))
+        recalculateCustomers() // totals come from sales, not from the (possibly stale) form copy
+    }
+
+    suspend fun deleteCustomer(customer: CustomerEntity) {
+        customerDao.deleteCustomer(customer)
+        recordDeletion(RecordIds.CUSTOMERS, customer.id)
+    }
 
     // Sales Orders
     val allOrders: Flow<List<SaleOrderEntity>> = saleOrderDao.getAllOrders()
@@ -98,18 +180,10 @@ class FarmRepository(
             )
         }
 
-        // Adjust customer balances
-        if (order.customerId > 0) {
-            customerDao.updateCustomerBalances(
-                customerId = order.customerId,
-                amountDiff = -order.balanceDue,
-                purchasesDiff = -order.totalAmount,
-                paidDiff = -order.amountPaid
-            )
-        }
-
-        // Delete order
+        // Delete order (recorded so sync deletes it elsewhere too), then re-derive balances.
         saleOrderDao.deleteOrder(order)
+        recordDeletion(RecordIds.SALES, order.id)
+        recalculateCustomers()
     }
 
     // App Settings
@@ -161,7 +235,8 @@ class FarmRepository(
                     notes = notes,
                     totalPurchases = 0.0,
                     totalPaid = 0.0,
-                    currentBalance = 0.0
+                    currentBalance = 0.0,
+                    updatedAt = System.currentTimeMillis()
                 )
                 effectiveCustomerId = customerDao.insertCustomer(newCust)
             }
@@ -182,20 +257,20 @@ class FarmRepository(
             paymentStatus = status,
             paymentMethod = paymentMethod.name,
             notes = notes,
-            timestamp = System.currentTimeMillis()
+            timestamp = System.currentTimeMillis(),
+            updatedAt = System.currentTimeMillis()
         )
 
         val orderId = saleOrderDao.insertOrder(order)
         val savedOrder = order.copy(id = orderId)
 
-        // Update customer balances:
-        // currentBalance += balanceDue, totalPurchases += totalAmount, totalPaid += amountPaid
-        customerDao.updateCustomerBalances(
-            customerId = effectiveCustomerId,
-            amountDiff = balanceDue,
-            purchasesDiff = totalAmount,
-            paidDiff = amountPaid
-        )
+        // Take the sold items out of stock. Each change is logged, so it syncs as a difference.
+        for (item in Formatters.parseCartItems(itemsJson)) {
+            adjustProductStock(item.productId, -item.quantity, "SALE", "Sold on Invoice #$invoiceNo")
+        }
+
+        // Customer totals are derived from sales.
+        recalculateCustomers()
 
         // If there was an upfront payment recorded, also log into payments table
         if (amountPaid > 0.0) {
@@ -209,7 +284,8 @@ class FarmRepository(
                     amount = amountPaid,
                     paymentMethod = paymentMethod.name,
                     notes = "Initial payment for Invoice #$invoiceNo",
-                    balanceAfterPayment = currentCust?.currentBalance ?: balanceDue
+                    balanceAfterPayment = currentCust?.currentBalance ?: balanceDue,
+                    updatedAt = System.currentTimeMillis()
                 )
             )
         }
@@ -256,44 +332,13 @@ class FarmRepository(
 
         val finalizedOrder = updatedOrder.copy(
             balanceDue = calculatedBalance,
-            paymentStatus = calculatedStatus
+            paymentStatus = calculatedStatus,
+            updatedAt = System.currentTimeMillis()
         )
 
-        // 3. Reconcile customer balances
-        if (originalOrder.customerId == finalizedOrder.customerId) {
-            if (finalizedOrder.customerId > 0) {
-                val balanceDiff = finalizedOrder.balanceDue - originalOrder.balanceDue
-                val purchasesDiff = finalizedOrder.totalAmount - originalOrder.totalAmount
-                val paidDiff = finalizedOrder.amountPaid - originalOrder.amountPaid
-                customerDao.updateCustomerBalances(
-                    customerId = finalizedOrder.customerId,
-                    amountDiff = balanceDiff,
-                    purchasesDiff = purchasesDiff,
-                    paidDiff = paidDiff
-                )
-            }
-        } else {
-            // Customer changed: revert old customer and apply to new customer
-            if (originalOrder.customerId > 0) {
-                customerDao.updateCustomerBalances(
-                    customerId = originalOrder.customerId,
-                    amountDiff = -originalOrder.balanceDue,
-                    purchasesDiff = -originalOrder.totalAmount,
-                    paidDiff = -originalOrder.amountPaid
-                )
-            }
-            if (finalizedOrder.customerId > 0) {
-                customerDao.updateCustomerBalances(
-                    customerId = finalizedOrder.customerId,
-                    amountDiff = finalizedOrder.balanceDue,
-                    purchasesDiff = finalizedOrder.totalAmount,
-                    paidDiff = finalizedOrder.amountPaid
-                )
-            }
-        }
-
-        // 4. Update the order in the database
+        // 3. Save, then re-derive customer totals (handles a changed customer too).
         saleOrderDao.updateOrder(finalizedOrder)
+        recalculateCustomers()
 
         return finalizedOrder
     }
@@ -342,7 +387,8 @@ class FarmRepository(
                 order.copy(
                     amountPaid = newAmountPaid,
                     balanceDue = newBalanceDue,
-                    paymentStatus = newStatus
+                    paymentStatus = newStatus,
+                    updatedAt = System.currentTimeMillis()
                 )
             )
             lastAllocatedOrderId = order.id
@@ -360,9 +406,21 @@ class FarmRepository(
                 paymentMethod = paymentMethod.name,
                 notes = notes.ifBlank { "Debt payment" },
                 timestamp = System.currentTimeMillis(),
-                balanceAfterPayment = newCustomerBalance
+                balanceAfterPayment = newCustomerBalance,
+                updatedAt = System.currentTimeMillis()
             )
         )
+
+        // Any amount beyond the unpaid sales pays off the opening (pre-app) balance.
+        if (remainingToAllocate > 0.0 && customer.openingBalance > 0.0) {
+            customerDao.updateCustomer(
+                customer.copy(
+                    openingBalance = (customer.openingBalance - remainingToAllocate).coerceAtLeast(0.0),
+                    updatedAt = System.currentTimeMillis()
+                )
+            )
+        }
+        recalculateCustomers()
 
         return newCustomerBalance
     }
@@ -391,7 +449,8 @@ class FarmRepository(
             order.copy(
                 amountPaid = newAmountPaid,
                 balanceDue = newBalanceDue,
-                paymentStatus = newStatus
+                paymentStatus = newStatus,
+                updatedAt = System.currentTimeMillis()
             )
         )
 
@@ -419,9 +478,11 @@ class FarmRepository(
                 paymentMethod = paymentMethod.name,
                 notes = notes.ifBlank { "Installment for Invoice #${order.invoiceNumber}" },
                 timestamp = System.currentTimeMillis(),
-                balanceAfterPayment = newCustomerBalance
+                balanceAfterPayment = newCustomerBalance,
+                updatedAt = System.currentTimeMillis()
             )
         )
+        recalculateCustomers()
 
         return newBalanceDue
     }
@@ -455,7 +516,8 @@ class FarmRepository(
         saleOrderDao.updateOrder(
             order.copy(
                 smsSentCount = order.smsSentCount + 1,
-                lastSmsTimestamp = System.currentTimeMillis()
+                lastSmsTimestamp = System.currentTimeMillis(),
+                updatedAt = System.currentTimeMillis()
             )
         )
     }

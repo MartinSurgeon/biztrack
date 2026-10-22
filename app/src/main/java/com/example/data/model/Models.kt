@@ -77,7 +77,9 @@ data class ProductEntity(
      * Web address of the photo's copy on the cloud server. "" = not uploaded yet,
      * [REMOTE_IMAGE_REMOVED] = the user removed the photo (tells the server to clear it).
      */
-    val remoteImageUrl: String = ""
+    val remoteImageUrl: String = "",
+    /** Last local or web edit (ms). Sync keeps the newer version; 0 = unknown / legacy. */
+    val updatedAt: Long = 0L
 ) {
     companion object {
         const val REMOTE_IMAGE_REMOVED = "none"
@@ -116,7 +118,16 @@ data class CustomerEntity(
     val totalPurchases: Double = 0.0,
     val totalPaid: Double = 0.0,
     val currentBalance: Double = 0.0, // Positive = owes money (debt)
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    /**
+     * Debt and purchases not tied to any sale (e.g. owed from before using the app).
+     * currentBalance = openingBalance + sum(sales.balanceDue) and
+     * totalPurchases = openingPurchases + sum(sales.totalAmount); totalPaid = purchases - balance.
+     * Derived this way so changes made on the phone and on the web add up after sync.
+     */
+    val openingBalance: Double = 0.0,
+    val openingPurchases: Double = 0.0,
+    val updatedAt: Long = 0L
 )
 
 @JsonClass(generateAdapter = true)
@@ -163,7 +174,8 @@ data class SaleOrderEntity(
     val notes: String = "",
     val timestamp: Long = System.currentTimeMillis(),
     val smsSentCount: Int = 0,
-    val lastSmsTimestamp: Long? = null
+    val lastSmsTimestamp: Long? = null,
+    val updatedAt: Long = 0L
 )
 
 @JsonClass(generateAdapter = true)
@@ -178,7 +190,8 @@ data class PaymentEntity(
     val paymentMethod: String,
     val notes: String = "",
     val timestamp: Long = System.currentTimeMillis(),
-    val balanceAfterPayment: Double = 0.0
+    val balanceAfterPayment: Double = 0.0,
+    val updatedAt: Long = 0L
 )
 
 @JsonClass(generateAdapter = true)
@@ -201,5 +214,19 @@ data class AppSettingsEntity(
     val cloudSyncSecretKey: String = "",
     val cloudAutoSyncOnSale: Boolean = false,
     val lastCloudSyncTime: Long = 0L,
-    val lastCloudSyncStatus: String = "Not synced yet"
+    val lastCloudSyncStatus: String = "Not synced yet",
+    /** When the user last edited these settings (not sync bookkeeping). Newer side wins on sync. */
+    val updatedAt: Long = 0L
+)
+
+/**
+ * Remembers that a record was deleted, so sync removes it on the other side instead of
+ * bringing it back. tableName is the Room/MySQL table name (e.g. "sales_orders").
+ */
+@JsonClass(generateAdapter = true)
+@Entity(tableName = "deleted_records", primaryKeys = ["tableName", "recordId"])
+data class DeletedRecordEntity(
+    val tableName: String,
+    val recordId: Long,
+    val deletedAt: Long
 )

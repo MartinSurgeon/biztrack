@@ -7,6 +7,7 @@ import android.util.Log
 import androidx.core.content.FileProvider
 import androidx.room.withTransaction
 import com.example.data.local.AppDatabase
+import com.example.data.local.RecordIds
 import com.example.data.model.*
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
@@ -75,6 +76,7 @@ object DatabaseBackupHelper {
             salesOrders = salesOrders,
             payments = payments,
             inventoryLogs = inventoryLogs,
+            deletedRecords = database.deletedRecordDao().getAll(),
             summary = summary
         )
     }
@@ -182,6 +184,7 @@ object DatabaseBackupHelper {
                             description = p.optString("description", ""),
                             imageUri = p.optString("imageUri", ""),
                             remoteImageUrl = p.optString("remoteImageUrl", ""),
+                            updatedAt = p.optLong("updatedAt", 0L),
                             lastRestockedAt = p.optLong("lastRestockedAt", System.currentTimeMillis())
                         )
                     )
@@ -216,7 +219,10 @@ object DatabaseBackupHelper {
                             totalPurchases = purchases,
                             totalPaid = c.optDouble("totalPaid", 0.0),
                             currentBalance = debt,
-                            createdAt = if (c.has("createdAt")) c.optLong("createdAt", System.currentTimeMillis()) else c.optLong("lastTransactionDate", System.currentTimeMillis())
+                            createdAt = if (c.has("createdAt")) c.optLong("createdAt", System.currentTimeMillis()) else c.optLong("lastTransactionDate", System.currentTimeMillis()),
+                            openingBalance = c.optDouble("openingBalance", 0.0),
+                            openingPurchases = c.optDouble("openingPurchases", 0.0),
+                            updatedAt = c.optLong("updatedAt", 0L)
                         )
                     )
                 }
@@ -253,7 +259,8 @@ object DatabaseBackupHelper {
                             notes = s.optString("notes", ""),
                             timestamp = s.optLong("timestamp", System.currentTimeMillis()),
                             smsSentCount = s.optInt("smsSentCount", 0),
-                            lastSmsTimestamp = rawLastSms
+                            lastSmsTimestamp = rawLastSms,
+                            updatedAt = s.optLong("updatedAt", 0L)
                         )
                     )
                 }
@@ -275,7 +282,8 @@ object DatabaseBackupHelper {
                             paymentMethod = pm.optString("paymentMethod", "CASH"),
                             notes = pm.optString("notes", ""),
                             timestamp = pm.optLong("timestamp", System.currentTimeMillis()),
-                            balanceAfterPayment = pm.optDouble("balanceAfterPayment", 0.0)
+                            balanceAfterPayment = pm.optDouble("balanceAfterPayment", 0.0),
+                            updatedAt = pm.optLong("updatedAt", 0L)
                         )
                     )
                 }
@@ -302,6 +310,18 @@ object DatabaseBackupHelper {
                 }
             }
 
+            val deletedRecords = mutableListOf<DeletedRecordEntity>()
+            dataObj.optJSONArray("deletedRecords")?.let { arr ->
+                for (i in 0 until arr.length()) {
+                    val d = arr.optJSONObject(i) ?: continue
+                    val table = d.optString("tableName", "")
+                    val recordId = d.optLong("recordId", 0L)
+                    if (table.isNotBlank() && recordId != 0L) {
+                        deletedRecords.add(DeletedRecordEntity(table, recordId, d.optLong("deletedAt", 0L)))
+                    }
+                }
+            }
+
             val settingsEntity = if (dataObj.has("settings") && !dataObj.isNull("settings")) {
                 val st = dataObj.getJSONObject("settings")
                 AppSettingsEntity(
@@ -320,7 +340,8 @@ object DatabaseBackupHelper {
                     cloudSyncSecretKey = st.optString("cloudSyncSecretKey", ""),
                     cloudAutoSyncOnSale = st.optBoolean("cloudAutoSyncOnSale", false),
                     lastCloudSyncTime = st.optLong("lastCloudSyncTime", 0L),
-                    lastCloudSyncStatus = st.optString("lastCloudSyncStatus", "Synced")
+                    lastCloudSyncStatus = st.optString("lastCloudSyncStatus", "Synced"),
+                    updatedAt = st.optLong("updatedAt", 0L)
                 )
             } else {
                 null
@@ -338,6 +359,7 @@ object DatabaseBackupHelper {
                 salesOrders = salesOrders,
                 payments = payments,
                 inventoryLogs = logs,
+                deletedRecords = deletedRecords,
                 summary = BackupSummary(
                     totalProducts = products.size,
                     totalCustomers = customers.size,
@@ -355,7 +377,14 @@ object DatabaseBackupHelper {
     }
 
     /**
-     * Restores full database from a parsed BackupData entity using Room transaction.
+     * Merges a backup or a cloud pull into this phone's database (two-way sync rules):
+     * - deletions listed in the backup remove the record here (unless edited here later);
+     * - for products, customers, sales and payments the newer version (updatedAt) wins;
+     * - stock is never overwritten: stock changes (inventory logs) not seen here before are
+     *   applied as differences, so sales and restocks made on both sides all count;
+     * - customer balances are re-derived from sales afterwards;
+     * - photos saved on this phone are kept (see the products step).
+     * Mirrors bt_merge_backup() in biztrack_core.php.
      */
     suspend fun restoreDatabase(
         database: AppDatabase,
@@ -363,91 +392,146 @@ object DatabaseBackupHelper {
     ): RestoreResult = withContext(Dispatchers.IO) {
         try {
             database.withTransaction {
-                // 1. Settings (Safely merge existing phone cloud/SMS config)
+                val productDao = database.productDao()
+                val customerDao = database.customerDao()
+                val saleDao = database.saleOrderDao()
+                val paymentDao = database.paymentDao()
+                val logDao = database.inventoryLogDao()
+                val deletedDao = database.deletedRecordDao()
+
+                // 1. Settings: the side edited last wins; this phone's cloud/SMS keys are kept.
                 backupData.settings?.let { newSettings ->
                     val existing = database.appSettingsDao().getSettingsDirect()
+                    if (existing != null && existing.updatedAt >= newSettings.updatedAt && existing.updatedAt > 0L) {
+                        return@let // ours is newer (or the incoming one predates edit tracking)
+                    }
                     val merged = if (existing != null) {
                         newSettings.copy(
                             cloudSyncUrl = newSettings.cloudSyncUrl.ifBlank { existing.cloudSyncUrl },
                             cloudSyncSecretKey = newSettings.cloudSyncSecretKey.ifBlank { existing.cloudSyncSecretKey },
                             smsApiKey = newSettings.smsApiKey.ifBlank { existing.smsApiKey },
-                            smsSenderId = newSettings.smsSenderId.ifBlank { existing.smsSenderId }
+                            smsSenderId = newSettings.smsSenderId.ifBlank { existing.smsSenderId },
+                            smsAutoSendOnSale = existing.smsAutoSendOnSale,
+                            smsAutoSendOnPayment = existing.smsAutoSendOnPayment,
+                            cloudAutoSyncOnSale = existing.cloudAutoSyncOnSale,
+                            lastCloudSyncTime = existing.lastCloudSyncTime,
+                            lastCloudSyncStatus = existing.lastCloudSyncStatus
                         )
-                    } else {
-                        newSettings
-                    }
+                    } else newSettings
                     database.appSettingsDao().saveSettings(merged)
                 }
 
-                // 2. Products. Restores used to overwrite each product's photo with whatever
-                // the backup/server had (often nothing), erasing photos saved on this phone.
-                // Keep this phone's photo file if it still exists; otherwise use the incoming
-                // one only if it's usable here, and fall back to the web copy for display.
-                if (backupData.products.isNotEmpty()) {
-                    val existing = database.productDao().getAllProductsDirect().associateBy { it.id }
-                    fun isLocalFile(path: String) = path.isNotBlank() && !path.startsWith("http") && !path.startsWith("content://") &&
-                        java.io.File(path.removePrefix("file://")).exists()
-                    val merged = backupData.products.map { incoming ->
-                        val old = existing[incoming.id]
-                        val keepLocal = old?.imageUri?.takeIf { isLocalFile(it) }
-                        val incomingLocal = incoming.imageUri.takeIf { isLocalFile(it) }
-                        incoming.copy(
-                            imageUri = keepLocal ?: incomingLocal ?: "",
-                            remoteImageUrl = incoming.remoteImageUrl.ifBlank {
-                                // Older servers send the web address in imageUri.
-                                incoming.imageUri.takeIf { it.startsWith("http") } ?: old?.remoteImageUrl.orEmpty()
-                            }
+                // 2. Deletions: remember them, and delete here unless edited here afterwards.
+                val deletions = (deletedDao.getAll() + backupData.deletedRecords)
+                    .groupBy { it.tableName to it.recordId }
+                    .mapValues { (_, v) -> v.maxOf { it.deletedAt } }
+                if (backupData.deletedRecords.isNotEmpty()) deletedDao.insertAll(backupData.deletedRecords)
+                fun deletedAfter(table: String, id: Long, updatedAt: Long) =
+                    deletions[table to id]?.let { it >= updatedAt } ?: false
+
+                val localProducts = productDao.getAllProductsDirect().associateBy { it.id }
+                val localCustomers = customerDao.getAllCustomersDirect().associateBy { it.id }
+                val localSales = saleDao.getAllOrdersDirect().associateBy { it.id }
+                val localPayments = paymentDao.getAllPaymentsDirect().associateBy { it.id }
+                for (d in backupData.deletedRecords) {
+                    when (d.tableName) {
+                        RecordIds.PRODUCTS -> localProducts[d.recordId]?.takeIf { it.updatedAt <= d.deletedAt }?.let { productDao.deleteById(it.id) }
+                        RecordIds.CUSTOMERS -> localCustomers[d.recordId]?.takeIf { it.updatedAt <= d.deletedAt }?.let { customerDao.deleteById(it.id) }
+                        RecordIds.SALES -> localSales[d.recordId]?.takeIf { it.updatedAt <= d.deletedAt }?.let { saleDao.deleteById(it.id) }
+                        RecordIds.PAYMENTS -> localPayments[d.recordId]?.takeIf { it.updatedAt <= d.deletedAt }?.let { paymentDao.deleteById(it.id) }
+                    }
+                }
+
+                // 3. Products: newer wins, but stock and this phone's photo are kept.
+                fun isLocalFile(path: String) = path.isNotBlank() && !path.startsWith("http") && !path.startsWith("content://") &&
+                    java.io.File(path.removePrefix("file://")).exists()
+                val newProductIds = mutableSetOf<Long>()
+                val productUpserts = backupData.products.mapNotNull { incoming ->
+                    if (deletedAfter(RecordIds.PRODUCTS, incoming.id, incoming.updatedAt)) return@mapNotNull null
+                    val old = localProducts[incoming.id]
+                    val photo = old?.imageUri?.takeIf { isLocalFile(it) } ?: incoming.imageUri.takeIf { isLocalFile(it) } ?: ""
+                    val remote = incoming.remoteImageUrl.ifBlank {
+                        incoming.imageUri.takeIf { it.startsWith("http") } ?: old?.remoteImageUrl.orEmpty() // older servers
+                    }
+                    when {
+                        old == null -> { newProductIds += incoming.id; incoming.copy(imageUri = photo, remoteImageUrl = remote) }
+                        incoming.updatedAt > old.updatedAt -> incoming.copy(stockQuantity = old.stockQuantity, imageUri = photo, remoteImageUrl = remote)
+                        old.remoteImageUrl.isBlank() && remote.startsWith("http") -> old.copy(remoteImageUrl = remote) // just learn the web copy
+                        else -> null
+                    }
+                }
+                if (productUpserts.isNotEmpty()) productDao.insertAll(productUpserts)
+
+                // 4. Stock changes: apply each one not seen here before (except for products that
+                //    arrived new in this merge - their stock already includes them).
+                val knownLogIds = logDao.getAllIds().toHashSet()
+                val newLogs = backupData.inventoryLogs.filter { it.id !in knownLogIds }
+                if (newLogs.isNotEmpty()) logDao.insertAll(newLogs)
+                for (log in newLogs) {
+                    if (log.productId !in newProductIds && productDao.getProductById(log.productId) != null) {
+                        productDao.adjustStock(log.productId, log.quantityChanged, log.timestamp)
+                    }
+                }
+
+                // 5. Customers: newer wins (their totals are re-derived below).
+                val legacyCustomers = mutableListOf<CustomerEntity>()
+                val customerUpserts = backupData.customers.mapNotNull { incoming ->
+                    if (deletedAfter(RecordIds.CUSTOMERS, incoming.id, incoming.updatedAt)) return@mapNotNull null
+                    val old = localCustomers[incoming.id]
+                    when {
+                        old == null -> { if (incoming.updatedAt == 0L) legacyCustomers += incoming; incoming }
+                        incoming.updatedAt > old.updatedAt -> incoming
+                        else -> null
+                    }
+                }
+                if (customerUpserts.isNotEmpty()) customerDao.insertAll(customerUpserts)
+
+                // 6. Sales and payments: newer wins.
+                val saleUpserts = backupData.salesOrders.filter { incoming ->
+                    !deletedAfter(RecordIds.SALES, incoming.id, incoming.updatedAt) &&
+                        (localSales[incoming.id]?.let { incoming.updatedAt > it.updatedAt } ?: true)
+                }
+                if (saleUpserts.isNotEmpty()) saleDao.insertAll(saleUpserts)
+                val paymentUpserts = backupData.payments.filter { incoming ->
+                    !deletedAfter(RecordIds.PAYMENTS, incoming.id, incoming.updatedAt) &&
+                        (localPayments[incoming.id]?.let { incoming.updatedAt > it.updatedAt } ?: true)
+                }
+                if (paymentUpserts.isNotEmpty()) paymentDao.insertAll(paymentUpserts)
+
+                // 7. Customers from older backups/servers carry totals but no opening amounts:
+                //    work them out from their sales so the restored balance is unchanged.
+                for (c in legacyCustomers) {
+                    val sales = saleDao.getAllOrdersForCustomerDirect(c.id)
+                    customerDao.updateCustomer(
+                        c.copy(
+                            openingBalance = c.currentBalance - sales.sumOf { it.balanceDue },
+                            openingPurchases = c.totalPurchases - sales.sumOf { it.totalAmount }
                         )
-                    }
-                    database.productDao().insertAll(merged)
+                    )
                 }
 
-                // 3. Customers
-                if (backupData.customers.isNotEmpty()) {
-                    database.customerDao().insertAll(backupData.customers)
-                }
-
-                // 4. Sales Orders
-                if (backupData.salesOrders.isNotEmpty()) {
-                    database.saleOrderDao().insertAll(backupData.salesOrders)
-
-                    // Reconcile debtors: Ensure any customer who has unpaid orders (balanceDue > 0) has their customer record created and currentBalance updated
-                    val allCustomersMap = database.customerDao().getAllCustomersDirect().associateBy { it.id }.toMutableMap()
-                    for (order in backupData.salesOrders) {
-                        if (order.balanceDue > 0.009) {
-                            val existingCustomer = allCustomersMap[order.customerId]
-                            if (existingCustomer == null && order.customerId > 0) {
-                                val newCust = CustomerEntity(
-                                    id = order.customerId,
-                                    name = order.customerName.ifBlank { "Debtor #${order.customerId}" },
-                                    phone = order.customerPhone,
-                                    whatsapp = order.customerWhatsapp,
-                                    notes = "Restored from Invoice #${order.invoiceNumber}",
-                                    totalPurchases = order.totalAmount,
-                                    totalPaid = order.amountPaid,
-                                    currentBalance = order.balanceDue,
-                                    createdAt = order.timestamp
-                                )
-                                database.customerDao().insertCustomer(newCust)
-                                allCustomersMap[newCust.id] = newCust
-                            } else if (existingCustomer != null && existingCustomer.currentBalance < order.balanceDue) {
-                                val updated = existingCustomer.copy(currentBalance = order.balanceDue)
-                                database.customerDao().updateCustomer(updated)
-                                allCustomersMap[updated.id] = updated
-                            }
-                        }
+                // 8. Sales whose customer is missing (e.g. partial backups): recreate the customer.
+                val customerIds = customerDao.getAllCustomersDirect().map { it.id }.toHashSet()
+                for (order in backupData.salesOrders) {
+                    if (order.customerId > 0 && order.customerId !in customerIds &&
+                        (RecordIds.CUSTOMERS to order.customerId) !in deletions) { // deleted on purpose: leave it
+                        customerDao.insertCustomer(
+                            CustomerEntity(
+                                id = order.customerId,
+                                name = order.customerName.ifBlank { "Customer #${order.customerId}" },
+                                phone = order.customerPhone,
+                                whatsapp = order.customerWhatsapp,
+                                notes = "Restored from Invoice #${order.invoiceNumber}",
+                                createdAt = order.timestamp
+                            )
+                        )
+                        customerIds += order.customerId
                     }
                 }
 
-                // 5. Payments
-                if (backupData.payments.isNotEmpty()) {
-                    database.paymentDao().insertAll(backupData.payments)
-                }
-
-                // 6. Inventory Logs
-                if (backupData.inventoryLogs.isNotEmpty()) {
-                    database.inventoryLogDao().insertAll(backupData.inventoryLogs)
-                }
+                // 9. Re-derive every customer's totals from their sales.
+                customerDao.recalculateBalances()
+                customerDao.recalculatePaid()
             }
 
             RestoreResult(

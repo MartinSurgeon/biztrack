@@ -38,6 +38,9 @@ interface ProductDao {
 
     @Query("UPDATE products SET stockQuantity = stockQuantity + :quantityChange, lastRestockedAt = :timestamp WHERE id = :productId")
     suspend fun adjustStock(productId: Long, quantityChange: Double, timestamp: Long = System.currentTimeMillis())
+
+    @Query("DELETE FROM products WHERE id = :id")
+    suspend fun deleteById(id: Long)
 }
 
 @Dao
@@ -90,6 +93,24 @@ interface CustomerDao {
 
     @Query("SELECT SUM(currentBalance) FROM customers WHERE currentBalance > 0")
     fun getTotalOutstandingDebt(): Flow<Double?>
+
+    @Query("DELETE FROM customers WHERE id = :id")
+    suspend fun deleteById(id: Long)
+
+    /**
+     * Derives balances from sales so changes made on different devices add up after sync:
+     * balance = opening + unpaid sales, purchases = opening + sales totals.
+     * Call [recalculatePaid] right after.
+     */
+    @Query("""
+        UPDATE customers SET
+            currentBalance = MAX(0, openingBalance + COALESCE((SELECT SUM(s.balanceDue) FROM sales_orders s WHERE s.customerId = customers.id), 0)),
+            totalPurchases = openingPurchases + COALESCE((SELECT SUM(s.totalAmount) FROM sales_orders s WHERE s.customerId = customers.id), 0)
+    """)
+    suspend fun recalculateBalances()
+
+    @Query("UPDATE customers SET totalPaid = MAX(0, totalPurchases - currentBalance)")
+    suspend fun recalculatePaid()
 }
 
 @Dao
@@ -130,6 +151,9 @@ interface SaleOrderDao {
     @Delete
     suspend fun deleteOrder(order: SaleOrderEntity)
 
+    @Query("DELETE FROM sales_orders WHERE id = :id")
+    suspend fun deleteById(id: Long)
+
     @Query("SELECT SUM(totalAmount) FROM sales_orders")
     fun getTotalRevenue(): Flow<Double?>
 
@@ -168,6 +192,9 @@ interface PaymentDao {
 
     @Delete
     suspend fun deletePayment(payment: PaymentEntity)
+
+    @Query("DELETE FROM payments WHERE id = :id")
+    suspend fun deleteById(id: Long)
 }
 
 @Dao
@@ -198,4 +225,19 @@ interface InventoryLogDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAll(logs: List<InventoryLogEntity>): List<Long>
+
+    @Query("SELECT id FROM inventory_logs")
+    suspend fun getAllIds(): List<Long>
+}
+
+@Dao
+interface DeletedRecordDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insert(record: DeletedRecordEntity)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAll(records: List<DeletedRecordEntity>)
+
+    @Query("SELECT * FROM deleted_records")
+    suspend fun getAll(): List<DeletedRecordEntity>
 }

@@ -15,6 +15,7 @@ data class BackupData(
     val salesOrders: List<SaleOrderEntity> = emptyList(),
     val payments: List<PaymentEntity> = emptyList(),
     val inventoryLogs: List<InventoryLogEntity> = emptyList(),
+    val deletedRecords: List<DeletedRecordEntity> = emptyList(),
     val summary: BackupSummary = BackupSummary()
 )
 
