@@ -36,7 +36,7 @@ function bt_ensure_schema(PDO $db): void {
     $version = (int)($db->query("SELECT v FROM sync_meta WHERE k = 'schema_version'")->fetchColumn() ?: 0);
     if ($version >= BT_SCHEMA_VERSION) return;
 
-    $db->exec("
+    $tables = "
         CREATE TABLE IF NOT EXISTS products (
             id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
             name VARCHAR(255) NOT NULL,
@@ -137,7 +137,10 @@ function bt_ensure_schema(PDO $db): void {
             deletedAt BIGINT NOT NULL,
             PRIMARY KEY (tableName, recordId)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-    ");
+    ";
+    // One statement per call: some hosts' MySQL drivers leave a multi-statement call
+    // half-read, and every later query on the connection then fails.
+    foreach (array_filter(array_map('trim', explode(';', $tables))) as $sql) $db->exec($sql);
 
     // Columns missing from tables created by older versions.
     $columns = [
@@ -192,6 +195,20 @@ function bt_ensure_schema(PDO $db): void {
     ];
     foreach ($fixes as $sql) {
         try { $db->exec($sql); } catch (Exception $e) { error_log('BizTrack schema fix: ' . $e->getMessage()); }
+    }
+
+    // Everything below needs these columns. If one could not be added (for example the
+    // database user lacks ALTER permission), stop here: nothing is marked as done, so the
+    // upgrade runs again on the next request once the problem is fixed.
+    $missing = [];
+    foreach (['products' => ['updatedAt'], 'customers' => ['updatedAt', 'openingBalance', 'openingPurchases', 'currentBalance', 'totalPurchases'],
+              'sales_orders' => ['updatedAt', 'balanceDue', 'totalAmount'], 'payments' => ['updatedAt'], 'app_settings' => ['updatedAt']] as $table => $cols) {
+        $have = array_column($db->query("SHOW COLUMNS FROM `$table`")->fetchAll(PDO::FETCH_ASSOC), 'Field');
+        foreach ($cols as $col) if (!in_array($col, $have, true)) $missing[] = "$table.$col";
+    }
+    if ($missing) {
+        throw new RuntimeException('Could not add the columns ' . implode(', ', $missing)
+            . '. Make sure the database user has ALTER and CREATE permission (cPanel > MySQL Databases > user privileges: ALL PRIVILEGES).');
     }
 
     // Two-way sync (v4): whatever a balance doesn't get from sales becomes the opening

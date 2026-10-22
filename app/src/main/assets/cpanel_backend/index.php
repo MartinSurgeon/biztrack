@@ -551,14 +551,28 @@ if (!empty($DB_NAME) && !empty($DB_USER)) {
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
             PDO::ATTR_EMULATE_PREPARES   => false,
         ]);
-
-        // Tables, columns and one-time upgrades live in biztrack_core.php (shared with sync.php).
-        bt_ensure_schema($db);
-
     } catch (PDOException $e) {
         error_log("BizTrack dashboard DB error: " . $e->getMessage());
         $db = null;
         $dbError = "Could not connect to the database. Check the host, name, user and password.";
+    }
+    if ($db) {
+        // Tables, columns and one-time upgrades live in biztrack_core.php (shared with sync.php).
+        // Connected but the upgrade failed: say why, instead of showing the setup form.
+        try {
+            bt_ensure_schema($db);
+        } catch (Throwable $e) {
+            error_log('BizTrack schema upgrade failed: ' . $e->getMessage());
+            http_response_code(500);
+            header('Content-Type: text/html; charset=utf-8');
+            echo '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Database upgrade needed</title>'
+                . '<body style="font:16px/1.55 system-ui,sans-serif;max-width:640px;margin:48px auto;padding:0 16px;color:#09090b;background:#f4f4f5">'
+                . '<h1 style="font-size:22px">The database could not be upgraded</h1>'
+                . '<p>BizTrack connected to your database but could not add what the new version needs. Your data has not been changed, and your settings in <code>config.php</code> are fine: you do not need to run setup again.</p>'
+                . '<p style="background:#fff;border:1px solid #e4e4e7;border-radius:12px;padding:12px 14px"><strong>Reason:</strong> ' . htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8') . '</p>'
+                . '<p>Fix the reason above, then reload this page. The upgrade runs again automatically.</p></body>';
+            exit;
+        }
     }
 } else {
     $dbError = null; // first run: nothing configured yet, not an error

@@ -66,10 +66,10 @@ if (!file_exists(__DIR__ . '/biztrack_core.php')) {
 require_once __DIR__ . '/biztrack_core.php';
 try {
     bt_ensure_schema($pdo);
-} catch (Exception $e) {
+} catch (Throwable $e) {
     http_response_code(500);
     error_log('BizTrack schema upgrade failed: ' . $e->getMessage());
-    echo json_encode(['status' => 'error', 'message' => 'Database upgrade failed. Check the server error log.']);
+    echo json_encode(['status' => 'error', 'message' => 'Server database upgrade failed: ' . $e->getMessage()]);
     exit;
 }
 
