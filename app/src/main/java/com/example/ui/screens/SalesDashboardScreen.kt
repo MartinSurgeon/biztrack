@@ -155,7 +155,7 @@ fun SalesDashboardScreen(
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 MetricMiniCard("Today", Formatters.formatCurrency(todaySales, currency), Icons.AutoMirrored.Filled.TrendingUp, Tone.PRIMARY, Modifier.weight(1f),
-                    caption = "${todayOrders.size} ${if (todayOrders.size == 1) "sale" else "sales"}")
+                    caption = "${todayOrders.size} ${if (todayOrders.size == 1) "sale" else "sales"}", hiddenValue = maskedAmount(currency))
                 MetricMiniCard("Invoices", orders.size.toString(), Icons.AutoMirrored.Filled.ReceiptLong, Tone.NEUTRAL, Modifier.weight(1f),
                     caption = "all time")
             }
@@ -298,32 +298,40 @@ private fun HeroSalesCard(
     // Solid indigo in light mode; a deep indigo container in dark mode so the card doesn't glare.
     val dark = AppTheme.status.isDark
     val onHero = if (dark) c.onPrimaryContainer else c.onPrimary
+    val shown = figuresShown()
+    val money = { amount: Double -> if (shown) Formatters.formatCurrency(amount, currency) else maskedAmount(currency) }
     AppCard(
         color = if (dark) c.primaryContainer else c.primary,
         borderColor = Color.Transparent,
-        contentPadding = PaddingValues(20.dp),
+        contentPadding = PaddingValues(start = 20.dp, end = 8.dp, top = 8.dp, bottom = 20.dp),
+        pattern = onHero.copy(alpha = if (dark) 0.18f else 0.24f),
         modifier = Modifier.testTag("debt_hero_card")
     ) {
-        Text("Total sales", style = MaterialTheme.typography.labelLarge, color = onHero.copy(alpha = 0.85f))
-        Spacer(Modifier.height(4.dp))
-        Text(Formatters.formatCurrency(totalRevenue, currency), style = MaterialTheme.typography.headlineLarge, color = onHero,
-            maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Spacer(Modifier.height(16.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            HeroStat("Collected", Formatters.formatCurrency(totalCollected, currency), Icons.Default.CheckCircle, onHero, Modifier.weight(1f))
-            HeroStat(
-                label = if (debtorCount > 0) "Owed · $debtorCount" else "Owed",
-                value = Formatters.formatCurrency(totalDebt, currency),
-                icon = Icons.Default.Schedule,
-                onHero = onHero,
-                modifier = Modifier.weight(1f).clip(RoundedCornerShape(14.dp)).pressable(onClick = onClickDebt)
-            )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Total sales", style = MaterialTheme.typography.labelLarge, color = onHero.copy(alpha = 0.85f), modifier = Modifier.weight(1f))
+            FiguresToggleButton(tint = onHero, modifier = Modifier.testTag("figures_toggle"))
+        }
+        Column(Modifier.padding(end = 12.dp)) {
+            Text(money(totalRevenue), style = MaterialTheme.typography.headlineLarge, color = onHero,
+                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.maskedSemantics(!shown))
+            Spacer(Modifier.height(16.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                HeroStat("Collected", money(totalCollected), Icons.Default.CheckCircle, onHero, Modifier.weight(1f), masked = !shown)
+                HeroStat(
+                    label = if (debtorCount > 0) "Owed · $debtorCount" else "Owed",
+                    value = money(totalDebt),
+                    icon = Icons.Default.Schedule,
+                    onHero = onHero,
+                    modifier = Modifier.weight(1f).clip(RoundedCornerShape(14.dp)).pressable(onClick = onClickDebt),
+                    masked = !shown
+                )
+            }
         }
     }
 }
 
 @Composable
-private fun HeroStat(label: String, value: String, icon: ImageVector, onHero: Color, modifier: Modifier = Modifier) {
+private fun HeroStat(label: String, value: String, icon: ImageVector, onHero: Color, modifier: Modifier = Modifier, masked: Boolean = false) {
     Column(
         modifier = modifier
             .clip(RoundedCornerShape(14.dp))
@@ -336,7 +344,8 @@ private fun HeroStat(label: String, value: String, icon: ImageVector, onHero: Co
             Text(label, style = MaterialTheme.typography.labelMedium, color = onHero.copy(alpha = 0.9f), maxLines = 1)
         }
         Spacer(Modifier.height(4.dp))
-        Text(value, style = MaterialTheme.typography.titleMedium, color = onHero, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(value, style = MaterialTheme.typography.titleMedium, color = onHero, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.maskedSemantics(masked))
     }
 }
 
@@ -358,16 +367,35 @@ fun MetricMiniCard(
     icon: ImageVector,
     tone: Tone,
     modifier: Modifier = Modifier,
-    caption: String? = null
+    caption: String? = null,
+    hiddenValue: String? = null // money: shown instead of [value] while card figures are hidden
 ) {
-    AppCard(modifier = modifier, contentPadding = PaddingValues(14.dp)) {
+    val context = LocalContext.current
+    val sensitive = hiddenValue != null
+    val masked = sensitive && !figuresShown()
+    AppCard(
+        modifier = modifier,
+        contentPadding = PaddingValues(14.dp),
+        onClick = if (sensitive) ({ FigurePrivacy.toggle(context) }) else null,
+        pattern = toneColors(tone).content.copy(alpha = if (AppTheme.status.isDark) 0.26f else 0.2f)
+    ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconBadge(icon, tone = tone, size = 32.dp, iconSize = 16.dp, shape = RoundedCornerShape(10.dp))
             Spacer(Modifier.width(8.dp))
-            Text(title, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+            Text(title, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1,
+                overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            if (sensitive) {
+                Icon(
+                    if (masked) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                    contentDescription = if (masked) "Show amounts" else "Hide amounts",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
         }
         Spacer(Modifier.height(10.dp))
-        Text(value, style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(if (masked) hiddenValue!! else value, style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.maskedSemantics(masked))
         if (caption != null) {
             Text(caption, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }

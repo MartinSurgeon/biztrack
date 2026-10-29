@@ -82,10 +82,46 @@ function money($amount): string {
     return e($currency) . ' ' . number_format((float)$amount, 2);
 }
 
-/** Money for KPI cards: a smaller currency symbol that may wrap above the number on narrow cards. */
+/** Money for KPI cards: a smaller currency symbol that may wrap above the number on narrow cards.
+ *  Hidden as dots until the viewer chooses to show amounts (see figuresToggle). */
 function kpiMoney($amount): string {
     global $currency;
-    return '<span class="kpi-cur">' . e($currency) . '</span> <span class="kpi-num">' . number_format((float)$amount, 2) . '</span>';
+    return '<span class="kpi-cur">' . e($currency) . '</span> <span class="kpi-num">'
+        . '<span class="fig">' . number_format((float)$amount, 2) . '</span>'
+        . '<span class="fig-mask"><span aria-hidden="true">•••••</span><span class="sr-only">hidden</span></span></span>';
+}
+
+/** Money inside a card's caption that hides together with the card figures. */
+function maskedMoney($amount): string {
+    global $currency;
+    return '<span class="fig">' . money($amount) . '</span>'
+        . '<span class="fig-mask">' . e($currency) . ' <span aria-hidden="true">•••</span><span class="sr-only">hidden</span></span>';
+}
+
+/** Button that shows or hides the card figures (remembered in this browser); compact = eye icon only. */
+function figuresToggle(bool $compact = false): string {
+    if ($compact) {
+        return '<button type="button" class="icon-btn kpi-eye" data-figures-toggle>'
+            . '<span class="fig-mask">' . icon('eye', 'ic-sm') . '<span class="sr-only">Show amounts</span></span>'
+            . '<span class="fig">' . icon('eyeOff', 'ic-sm') . '<span class="sr-only">Hide amounts</span></span></button>';
+    }
+    return '<button type="button" class="btn btn-secondary" data-figures-toggle>'
+        . '<span class="fig-mask">' . icon('eye', 'ic-sm') . ' Show amounts</span>'
+        . '<span class="fig">' . icon('eyeOff', 'ic-sm') . ' Hide amounts</span></button>';
+}
+
+/** Soft contour waves for a figure card's corner, tinted by the card's --pat colour (decorative). */
+function kpiPattern(): string {
+    static $svg = null;
+    if ($svg === null) {
+        $paths = '';
+        for ($i = 0; $i < 8; $i++) {
+            $y = -8 + $i * 16; $a = 9 + $i * 1.1;
+            $paths .= sprintf('<path d="M72 %.1f C110 %.1f 144 %.1f 180 %.1f S228 %.1f 250 %.1f"/>', $y + $a, $y - $a, $y + $a * 1.6, $y, $y - $a * 0.7, $y - $a * 0.2);
+        }
+        $svg = '<svg class="kpi-pattern" viewBox="0 0 240 140" preserveAspectRatio="xMaxYMin slice" aria-hidden="true" focusable="false">' . $paths . '</svg>';
+    }
+    return $svg;
 }
 
 function fmtDate($ms, string $format = 'd M Y, H:i'): string {
@@ -179,6 +215,8 @@ function icon(string $name, string $class = 'ic'): string {
         'logout' => '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>',
         'search' => '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
         'chart' => '<path d="M3 3v18h18"/><path d="M8 17V11M13 17V7M18 17v-4"/>',
+        'eye' => '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
+        'eyeOff' => '<path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.4 10.4 0 0 1 12 5c6.5 0 10 7 10 7a13.2 13.2 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.5 13.5 0 0 0 2 12s3.5 7 10 7a9.7 9.7 0 0 0 5.39-1.61"/><path d="m2 2 20 20"/>',
         'trend' => '<path d="m22 7-8.5 8.5-5-5L2 17"/><path d="M16 7h6v6"/>',
         'trendDown' => '<path d="m22 17-8.5-8.5-5 5L2 7"/><path d="M16 17h6v-6"/>',
         'check' => '<path d="M20 6 9 17l-5-5"/>',
@@ -221,6 +259,9 @@ function renderHead(string $title): void { ?>
     try { t = localStorage.getItem('bt-theme'); } catch (e) {}
     if (!t) t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
     document.documentElement.setAttribute('data-theme', t);
+    var f = null;
+    try { f = localStorage.getItem('bt-figures'); } catch (e) {}
+    document.documentElement.setAttribute('data-figures', f === 'shown' ? 'shown' : 'hidden');
   })();
 </script>
 <script src="https://cdn.tailwindcss.com/3.4.16"></script>
@@ -431,7 +472,21 @@ function renderHead(string $title): void { ?>
   @container (max-width: 479px) { .kpi-grid > .card { padding: 16px; } }
   @container (min-width: 640px) { .kpi-grid { gap: 16px; grid-template-columns: repeat(4, minmax(0, 1fr)); } }
   @container (min-width: 1040px) { .kpi-grid { gap: 20px; grid-template-columns: repeat(5, minmax(0, 1fr)); } .kpi-grid > .kpi-hero { grid-column: auto; } }
-  .kpi-card { container-type: inline-size; min-width: 0; }
+  .kpi-card { container-type: inline-size; min-width: 0; position: relative; overflow: hidden; isolation: isolate; }
+  .kpi-pattern { position: absolute; top: 0; right: 0; width: min(100%, 340px); height: 100%; z-index: -1; pointer-events: none; color: var(--pat, var(--primary));
+                 opacity: .2; fill: none; stroke: currentColor; stroke-width: 1.2px; stroke-linecap: round;
+                 -webkit-mask-image: radial-gradient(130% 150% at 100% 0%, #000 15%, rgba(0,0,0,.45) 45%, transparent 75%);
+                         mask-image: radial-gradient(130% 150% at 100% 0%, #000 15%, rgba(0,0,0,.45) 45%, transparent 75%); }
+  [data-theme="dark"] .kpi-pattern { opacity: .28; }
+  .kpi-pattern path { vector-effect: non-scaling-stroke; }
+  .pat-primary { --pat: var(--primary); } .pat-info { --pat: var(--info); } .pat-success { --pat: var(--success); } .pat-danger { --pat: var(--danger); }
+  /* Amount masking: data-figures on <html> picks the real or the dotted form. */
+  html:not([data-figures="shown"]) .fig { display: none !important; }
+  html[data-figures="shown"] .fig-mask { display: none !important; }
+  .fig-mask [aria-hidden] { letter-spacing: .06em; }
+  .btn > .fig, .btn > .fig-mask, .icon-btn > .fig, .icon-btn > .fig-mask { display: inline-flex; align-items: center; gap: 8px; }
+  .kpi-eye { width: 36px; height: 36px; margin: -6px -6px -6px auto; background: transparent; color: var(--muted); }
+  .kpi-eye:hover { background: var(--surface-2); color: var(--text); }
   .kpi { font-size: 26px; line-height: 1.15; font-weight: 800; letter-spacing: -.02em; font-variant-numeric: tabular-nums; margin-top: 12px; overflow-wrap: anywhere; }
   .kpi-card .kpi { font-size: clamp(17px, 12.5cqi, 30px); }
   .kpi-cur { font-size: .6em; font-weight: 700; letter-spacing: 0; color: var(--muted); white-space: nowrap; }
@@ -1358,17 +1413,20 @@ if ($tab === 'dashboard'):
 
         <!-- KPIs -->
         <section class="kpi-wrap mb-6" aria-label="Key figures"><div class="kpi-grid">
-            <a href="index.php?tab=sales" class="card card-pad kpi-card kpi-hero block transition hover:ring-2" style="--tw-ring-color:var(--primary)">
-                <div class="flex items-center gap-2 muted text-sm font-medium"><span class="kpi-icon bg-tone-primary"><?= icon('chart', 'ic-sm') ?></span> Total sales</div>
+            <div class="card card-pad kpi-card kpi-hero pat-primary">
+                <?= kpiPattern() ?>
+                <div class="flex items-center gap-2 muted text-sm font-medium"><span class="kpi-icon bg-tone-primary"><?= icon('chart', 'ic-sm') ?></span> Total sales<?= figuresToggle(true) ?></div>
                 <div class="kpi"><?= kpiMoney($totalSalesSum) ?></div>
-                <div class="text-sm muted mt-1"><?= number_format($totalSalesCount) ?> <?= $totalSalesCount === 1 ? 'sale' : 'sales' ?> all time<?= $totalSalesCount > 0 ? ' · ' . money($totalSalesSum / $totalSalesCount) . ' average' : '' ?></div>
-            </a>
-            <div class="card card-pad kpi-card">
+                <div class="text-sm muted mt-1"><?= number_format($totalSalesCount) ?> <?= $totalSalesCount === 1 ? 'sale' : 'sales' ?> all time<?= $totalSalesCount > 0 ? ' · ' . maskedMoney($totalSalesSum / $totalSalesCount) . ' average' : '' ?></div>
+            </div>
+            <div class="card card-pad kpi-card pat-primary">
+                <?= kpiPattern() ?>
                 <div class="flex items-center gap-2 muted text-sm font-medium"><span class="kpi-icon bg-tone-primary"><?= icon('trend', 'ic-sm') ?></span> Today</div>
                 <div class="kpi"><?= kpiMoney($todayTotal) ?></div>
                 <div class="text-sm muted mt-1"><?= $todayCount ?> <?= $todayCount === 1 ? 'sale' : 'sales' ?></div>
             </div>
-            <div class="card card-pad kpi-card">
+            <div class="card card-pad kpi-card pat-info">
+                <?= kpiPattern() ?>
                 <div class="flex items-center gap-2 muted text-sm font-medium"><span class="kpi-icon bg-tone-info"><?= icon('receipt', 'ic-sm') ?></span> This month</div>
                 <div class="kpi"><?= kpiMoney($thisMonth) ?></div>
                 <div class="text-sm mt-1 flex items-center gap-1">
@@ -1380,12 +1438,14 @@ if ($tab === 'dashboard'):
                     <?php endif; ?>
                 </div>
             </div>
-            <div class="card card-pad kpi-card">
+            <div class="card card-pad kpi-card pat-success">
+                <?= kpiPattern() ?>
                 <div class="flex items-center gap-2 muted text-sm font-medium"><span class="kpi-icon bg-tone-success"><?= icon('checkCircle', 'ic-sm') ?></span> Collected</div>
                 <div class="kpi"><?= kpiMoney($totalCollectedSum) ?></div>
                 <div class="text-sm muted mt-1"><?= $totalSalesSum > 0 ? number_format($totalCollectedSum / $totalSalesSum * 100, 0) . '% of total sales' : 'Nothing sold yet' ?></div>
             </div>
-            <a href="index.php?tab=customers&filter=owing" class="card card-pad kpi-card block transition hover:ring-2" style="--tw-ring-color:var(--danger)">
+            <a href="index.php?tab=customers&filter=owing" class="card card-pad kpi-card pat-danger block transition hover:ring-2" style="--tw-ring-color:var(--danger)">
+                <?= kpiPattern() ?>
                 <div class="flex items-center gap-2 muted text-sm font-medium"><span class="kpi-icon bg-tone-danger"><?= icon('clock', 'ic-sm') ?></span> Owed to you</div>
                 <div class="kpi <?= $totalDebtSum > 0 ? 'text-danger' : '' ?>"><?= kpiMoney($totalDebtSum) ?></div>
                 <div class="text-sm muted mt-1"><?= $debtorsCount ?> <?= $debtorsCount === 1 ? 'customer' : 'customers' ?> owing</div>
@@ -2673,11 +2733,11 @@ elseif ($tab === 'payments'):
     $payMonth = array_sum(array_map(fn($p) => (float)$p['timestamp'] >= $monthStartMs ? (float)$p['amount'] : 0, $allPayments));
     $payTotal = array_sum(array_map(fn($p) => (float)$p['amount'], $allPayments));
 ?>
-        <?php pageHeader('Payments', 'Money received from customers, including part-payments on credit sales.'); ?>
+        <?php pageHeader('Payments', 'Money received from customers, including part-payments on credit sales.', figuresToggle()); ?>
 
         <div class="grid grid-cols-2 gap-3 lg:gap-5 mb-6">
-            <div class="card card-pad kpi-card"><div class="muted text-sm font-medium">This month</div><div class="kpi"><?= kpiMoney($payMonth) ?></div></div>
-            <div class="card card-pad kpi-card"><div class="muted text-sm font-medium">All time · <?= count($allPayments) ?> payments</div><div class="kpi"><?= kpiMoney($payTotal) ?></div></div>
+            <div class="card card-pad kpi-card pat-success"><?= kpiPattern() ?><div class="muted text-sm font-medium">This month</div><div class="kpi"><?= kpiMoney($payMonth) ?></div></div>
+            <div class="card card-pad kpi-card pat-primary"><?= kpiPattern() ?><div class="muted text-sm font-medium">All time · <?= count($allPayments) ?> payments</div><div class="kpi"><?= kpiMoney($payTotal) ?></div></div>
         </div>
 
         <div class="flex flex-col md:flex-row gap-3 mb-4" data-filters="paymentsTable">
@@ -2946,6 +3006,12 @@ elseif ($tab === 'settings'): ?>
         document.documentElement.setAttribute('data-theme', next);
         try { localStorage.setItem('bt-theme', next); } catch (e) {}
     }
+    // Show / hide card amounts everywhere; remembered in this browser.
+    document.querySelectorAll('[data-figures-toggle]').forEach(b => b.addEventListener('click', () => {
+        const next = document.documentElement.getAttribute('data-figures') === 'shown' ? 'hidden' : 'shown';
+        document.documentElement.setAttribute('data-figures', next);
+        try { localStorage.setItem('bt-figures', next); } catch (e) {}
+    }));
     function toggleNav(open) {
         document.getElementById('sidebar').classList.toggle('open', open);
         document.getElementById('navScrim').classList.toggle('hidden', !open);

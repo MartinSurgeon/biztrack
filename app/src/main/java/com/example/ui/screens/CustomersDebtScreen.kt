@@ -24,6 +24,7 @@ import com.example.data.model.PaymentEntity
 import com.example.data.model.SaleOrderEntity
 import com.example.data.remote.SmsService
 import com.example.ui.components.*
+import com.example.ui.theme.AppTheme
 import com.example.util.DigitalReceiptGenerator
 import com.example.util.Formatters
 
@@ -70,7 +71,11 @@ fun CustomersDebtScreen(
 
             item {
                 val owes = totalDebt > 0.009
-                AppCard(contentPadding = PaddingValues(18.dp)) {
+                val shown = figuresShown()
+                AppCard(
+                    contentPadding = PaddingValues(start = 18.dp, top = 18.dp, bottom = 18.dp, end = 6.dp),
+                    pattern = toneColors(if (owes) Tone.DANGER else Tone.SUCCESS).content.copy(alpha = if (AppTheme.status.isDark) 0.26f else 0.2f)
+                ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         IconBadge(
                             if (owes) Icons.Default.Schedule else Icons.Default.CheckCircle,
@@ -84,11 +89,13 @@ fun CustomersDebtScreen(
                                 style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                             Text(
-                                Formatters.formatCurrency(totalDebt, settings.currencySymbol),
+                                if (shown) Formatters.formatCurrency(totalDebt, settings.currencySymbol) else maskedAmount(settings.currencySymbol),
                                 style = MaterialTheme.typography.headlineMedium,
-                                color = if (owes) toneColors(Tone.DANGER).content else MaterialTheme.colorScheme.onSurface
+                                color = if (owes) toneColors(Tone.DANGER).content else MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.maskedSemantics(!shown)
                             )
                         }
+                        FiguresToggleButton(tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }

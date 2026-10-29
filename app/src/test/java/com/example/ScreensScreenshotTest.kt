@@ -6,9 +6,16 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.performClick
 import com.example.data.model.*
+import com.example.ui.components.FigurePrivacy
 import com.example.ui.screens.CustomersDebtScreen
 import com.example.ui.screens.ProductsCatalogScreen
 import com.example.ui.screens.SalesDashboardScreen
@@ -69,7 +76,8 @@ class ScreensScreenshotTest {
         paymentMethod = PaymentMethod.CASH.name
     )
 
-    private fun capture(name: String, dark: Boolean, content: @Composable () -> Unit) {
+    private fun capture(name: String, dark: Boolean, shown: Boolean = false, content: @Composable () -> Unit) {
+        FigurePrivacy.resetForTests(shownValue = shown) // amounts start hidden, as on a fresh install
         composeTestRule.setContent {
             MyApplicationTheme(darkTheme = dark) {
                 Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) { content() }
@@ -96,6 +104,23 @@ class ScreensScreenshotTest {
 
     @Test fun dashboard_light() = capture("dashboard", false) { Dashboard() }
     @Test fun dashboard_dark() = capture("dashboard", true) { Dashboard() }
+    @Test fun dashboard_shown_light() = capture("dashboard_shown", false, shown = true) { Dashboard() }
+    @Test fun dashboard_shown_dark() = capture("dashboard_shown", true, shown = true) { Dashboard() }
+
+    @Test fun eye_shows_and_hides_amounts() {
+        FigurePrivacy.resetForTests(shownValue = false)
+        composeTestRule.setContent { MyApplicationTheme(darkTheme = false) { Dashboard() } }
+        // All sample sales are from today, so the total and "Today" are both GH₵ 715.00.
+        val total = Formatters.formatCurrency(715.0, "GH₵")
+        composeTestRule.onAllNodesWithText(total).assertCountEquals(0)
+        composeTestRule.onAllNodesWithText(Formatters.formatCurrency(400.0, "GH₵")).assertCountEquals(0)
+        composeTestRule.onNodeWithTag("figures_toggle").performClick()
+        composeTestRule.onAllNodesWithText(total).assertCountEquals(2)
+        composeTestRule.onNodeWithText(Formatters.formatCurrency(400.0, "GH₵")).assertIsDisplayed()
+        composeTestRule.onNodeWithTag("figures_toggle").performClick()
+        composeTestRule.onAllNodesWithText(total).assertCountEquals(0)
+    }
+
     @Test fun products_light() = capture("products", false) { Products() }
     @Test fun products_dark() = capture("products", true) { Products() }
     @Test fun customers_light() = capture("customers", false) { Customers() }

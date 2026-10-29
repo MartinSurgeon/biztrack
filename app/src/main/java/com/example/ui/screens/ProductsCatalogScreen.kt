@@ -86,7 +86,8 @@ fun ProductsCatalogScreen(
                     MetricMiniCard("Items", products.size.toString(), Icons.Default.Inventory2, Tone.PRIMARY, Modifier.weight(1f),
                         caption = "${categories.size} ${if (categories.size == 1) "category" else "categories"}")
                     MetricMiniCard("Stock value", Formatters.formatCurrency(inventoryValue, settings.currencySymbol), Icons.Default.Sell, Tone.SUCCESS, Modifier.weight(1f),
-                        caption = if (lowCount + outCount > 0) "${lowCount + outCount} need attention" else "all stocked")
+                        caption = if (lowCount + outCount > 0) "${lowCount + outCount} need attention" else "all stocked",
+                        hiddenValue = maskedAmount(settings.currencySymbol))
                 }
             }
 

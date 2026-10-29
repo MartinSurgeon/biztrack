@@ -96,6 +96,7 @@ fun AppCard(
     color: Color = MaterialTheme.colorScheme.surface,
     borderColor: Color? = null,
     contentPadding: PaddingValues = PaddingValues(16.dp),
+    pattern: Color? = null,
     content: @Composable ColumnScope.() -> Unit
 ) {
     val source = remember { MutableInteractionSource() }
@@ -104,6 +105,7 @@ fun AppCard(
         .clay(shape, color)
         .then(if (borderColor != null && borderColor != Color.Transparent) Modifier.border(1.dp, borderColor, shape) else Modifier)
         .clip(shape)
+        .then(if (pattern != null) Modifier.wavePattern(pattern) else Modifier)
         .then(
             if (onClick != null) Modifier.clickable(
                 interactionSource = source,
